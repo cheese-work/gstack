@@ -1,0 +1,338 @@
+# Fork-only workflow (cheese-work/gstack, CHE-5029). Not in upstream garrytan/gstack,
+# so upstream merges never touch it.
+#
+# Why: upstream's free-tests.yml runs the free-suite shards on the paid
+# Ubicloud label ubicloud-standard-8. This fork has no such runner, so those
+# jobs queue forever. This workflow runs the same sharded free suite, with the
+# same plan, the same shard steps and the same strict verification, on
+# GitHub-hosted ubuntu-24.04 runners (free for a public repository).
+#
+# Differences from free-tests.yml (kept on purpose, so upstream syncs stay
+# easy to compare):
+#   - runner: ubuntu-24.04 (4 vCPU) instead of ubicloud-standard-8;
+#   - 16 shards x 2 sub-shards (upstream 10 x 4), because each shard has half the cores;
+#   - no tree-reuse, docs-only, Trunk, quick-tier, macOS or Windows jobs; the
+#     platform jobs of free-tests.yml are not duplicated here;
+#   - no `tested-tree` record, so nothing here is ever a reuse source.
+# When upstream changes a free-suite step in free-tests.yml, mirror it here.
+# The `Free Tests (fork)` aggregate job is the check a sync PR needs green.
+name: Fork Free Suite
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FREE_SUITE_SHARDS: '16'
+  FREE_SUITE_JOBS: '2'
+  FREE_SUITE_SETUP_SECONDS: '300'
+
+concurrency:
+  group: fork-free-suite-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  free-plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - id: plan
+        name: Inventory and balance the complete free suite
+        run: |
+          set -euo pipefail
+          matrix=$(bun run scripts/test-free-shards.ts --ci-plan "$RUNNER_TEMP/free-plan.json" --shards "$FREE_SUITE_SHARDS" --shard-jobs "$FREE_SUITE_JOBS" --job-setup-seconds "$FREE_SUITE_SETUP_SECONDS")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: free-plan
+          path: ${{ runner.temp }}/free-plan.json
+          if-no-files-found: error
+
+  free-suite:
+    name: free-suite (${{ matrix.shard }})
+    needs: [free-plan]
+    runs-on: ubuntu-24.04
+    # Per shard, from the plan: runner wall + flaky retry + setup (#3850).
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.free-plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Push runs check out main with `checkout -B main`, so the clone holds a
+      # local main; PR runs are a detached merge ref and train dispatches sit on
+      # train/<nonce>. A fixture that made its own main passed its PR and then
+      # failed every push to main (#3237, run 38999168852). Give every run the
+      # push layout so a PR run catches what the main push would.
+      - name: Match main's local branch layout on PR and dispatch runs
+        if: github.ref != 'refs/heads/main'
+        run: git checkout -q -B main
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: free-plan
+          path: ${{ runner.temp }}
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.bun/install/cache
+          key: linux-bun-${{ hashFiles('bun.lock') }}
+          # A lockfile bump starts from the previous cache instead of cold.
+          restore-keys: |
+            linux-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Read the Playwright version for the browser cache key
+        id: playwright
+        run: echo "version=$(node -p 'require("playwright-core/package.json").version')" >> "$GITHUB_OUTPUT"
+
+      # Keyed on the Playwright version, which fixes the Chromium revision: a
+      # lockfile bump that keeps Playwright reuses the browser, and a Playwright
+      # bump never restores a stale revision.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: linux-playwright-chromium-${{ steps.playwright.outputs.version }}
+
+      # The cache restores the browser; --with-deps still runs apt for system
+      # libraries. On 2026-10-21 apt stalled on an archive.ubuntu.com fetch and
+      # held free-suite (12) for the whole 20-minute job timeout (run
+      # 39641712129). Each attempt gets 5 minutes (a warm install takes about
+      # 15 s) and the install alone is retried once. This retries infrastructure,
+      # never a test.
+      - name: Install Playwright Chromium
+        id: playwright_install
+        timeout-minutes: 5
+        continue-on-error: true
+        run: npx playwright install --with-deps chromium
+
+      - name: Retry the Playwright Chromium install once
+        if: steps.playwright_install.outcome == 'failure'
+        timeout-minutes: 5
+        run: npx playwright install --with-deps chromium
+
+      - name: Configure the bundled Chromium sandbox helper
+        run: |
+          set -euo pipefail
+          chrome=$(bun -e 'import { chromium } from "playwright"; import { realpathSync } from "node:fs"; console.log(realpathSync(chromium.executablePath()))')
+          case "$chrome" in
+            "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome) ;;
+            *) echo "Unexpected Chromium installation path" >&2; exit 1 ;;
+          esac
+          helper="${chrome%/*}/chrome_sandbox"
+          installed="${chrome%/*}/chrome-sandbox"
+          test -f "$helper" && test ! -L "$helper"
+          sudo install -T -o root -g root -m 4755 "$helper" "$installed"
+          test "$(stat -c '%u:%a' "$installed")" = '0:4755'
+          cmp -s "$helper" "$installed"
+      # Runner image 20261026.1.0 keeps kernel.apparmor_restrict_unprivileged_userns=1
+      # but loads no AppArmor profiles, so Chromium's namespace sandbox aborts with
+      # "credentials.cc: Permission denied". Grant user namespaces to this one
+      # resolved binary, the way Ubuntu's own chrome profile does.
+      - name: Let the bundled Chromium create its sandbox namespaces
+        run: |
+          set -euo pipefail
+          chrome=$(bun -e 'import { chromium } from "playwright"; import { realpathSync } from "node:fs"; console.log(realpathSync(chromium.executablePath()))')
+          case "$chrome" in
+            "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome) ;;
+            *) echo "Unexpected Chromium installation path" >&2; exit 1 ;;
+          esac
+          profile=/etc/apparmor.d/gstack-playwright-chromium
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile gstack-playwright-chromium %s flags=(unconfined) {\n  userns,\n}\n' "$chrome" | sudo tee "$profile" > /dev/null
+          sudo apparmor_parser -r "$profile"
+
+      # Headed-browser tests (handoff, extension sidepanel DOM) need a real
+      # DISPLAY — first Linux run failed with Playwright's "launched a headed
+      # browser without an XServer" banner. xvfb-run below provides it;
+      # x11-utils ships xdpyinfo for display probing. poppler-utils ships
+      # pdftotext/pdffonts/pdftoppm for the make-pdf e2e gates;
+      # fonts-noto-color-emoji is the emoji-gate's render font (playwright
+      # --with-deps usually installs it, but the gate must not depend on a
+      # transitive package list). Fonts must land BEFORE the first browse
+      # daemon launch — Chromium snapshots fontconfig at startup. zsh is not
+      # in the runner image; without it the bash+zsh portability arms (#2669)
+      # skip instead of running.
+      - name: Install Xvfb + X11 utilities + gate tools
+        run: sudo apt-get install -y --no-install-recommends xvfb x11-utils poppler-utils fonts-noto-color-emoji zsh
+
+      - name: Configure git identity (tests init temp repos)
+        run: |
+          git config --global user.email "free-tests-ci@gstack.test"
+          git config --global user.name "Free Tests CI"
+          git config --global init.defaultBranch main
+          # Some tests run git against the checkout itself; CI checkouts can be
+          # owned by a different uid than the runner user.
+          git config --global --add safe.directory '*'
+
+      - name: Generate host SKILL.md outputs (.agents, .factory)
+        # Golden-file tests read generated host outputs that are gitignored.
+        run: bun run gen:skill-docs --host all
+
+      - name: Vendor xterm assets into the extension
+        # extension/lib/xterm* are gitignored (vendored from npm at build
+        # time). Without them the sidepanel's terminal script bails and the
+        # sidepanel DOM tests time out waiting on init that never happens.
+        run: bun run vendor:xterm
+
+      - name: Build server-node bundle (loaded by browse cli imports)
+        run: bash browse/scripts/build-node-server.sh
+
+      # Narrowed gate build: the make-pdf e2e gates probe make-pdf/dist/pdf,
+      # browse/dist/browse, and the diagram-render bundle, then self-skip when
+      # absent — which made them silently skip on Linux for their whole life
+      # (this lane never built binaries). Full `bun run build` compiles five
+      # binaries and would add ~60-90s to the ONLY required check; the gates
+      # need exactly these three artifacts.
+      - name: Build gate binaries (make-pdf e2e gates)
+        run: bun run build:gates
+
+      - name: Build trusted CSO helper used by free contract tests
+        run: bun run build:cso
+
+      # Runner sizing: the suite runs one test at a time, so a shard needs RAM
+      # and disk more than cores. Sample both while it runs and report the peak.
+      - name: Start the memory and disk sampler
+        run: |
+          cat > "$RUNNER_TEMP/sample-resources.sh" <<'EOF'
+          while :; do
+            printf '%s %s %s\n' "$(date +%s)" "$(free -k | awk 'NR == 2 { print $3 }')" "$(df -Pk / | awk 'NR == 2 { print $4 }')"
+            sleep 2
+          done
+          EOF
+          nohup sh "$RUNNER_TEMP/sample-resources.sh" > "$RUNNER_TEMP/resources.log" 2>&1 &
+
+      # GSTACK_EXPECT_BINARIES=1 arms make-pdf/test/e2e/ci-prereqs.test.ts:
+      # if a future edit drops the gate build (or poppler), the lane FAILS
+      # instead of the gates silently self-skipping back to false green.
+      - name: Run free suite
+        run: xvfb-run -a bun run test:free --ci-run "$RUNNER_TEMP/free-plan.json" --shard ${{ matrix.shard }} --result "$RUNNER_TEMP/free-results/shard-${{ matrix.shard }}.json" --junit-dir "$RUNNER_TEMP/free-junit"
+        env:
+          GSTACK_EXPECT_BINARIES: "1"
+          # WS1 flake telemetry: a single timing flake must not red the only
+          # required lane — the runner's attribution-gated retry pass (cap 5,
+          # truncation veto) re-runs failing files once, serially, and a
+          # clean retry downgrades to a LOUD flaky-pass. Every flaky-pass is
+          # appended to the ledger (single writer: the parent runner) and
+          # uploaded below, so repeat offenders are an enumerable series —
+          # recorded and ranked, never masked. Pinned by
+          # test/free-tests-workflow-wiring.test.ts.
+          GSTACK_FREE_RETRY_FLAKY: "1"
+          GSTACK_FLAKE_LEDGER: ${{ runner.temp }}/flake-ledger.jsonl
+
+      - name: Report peak memory and minimum free disk
+        if: always()
+        run: |
+          if [ ! -s "$RUNNER_TEMP/resources.log" ]; then echo "RESOURCES: no samples"; exit 0; fi
+          awk '{ if ($2 > used) used = $2; if (free == "" || $3 < free) free = $3 } END { printf "RESOURCES: peak_used_mib=%d min_free_disk_mib=%d samples=%d\n", used / 1024, free / 1024, NR }' "$RUNNER_TEMP/resources.log" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload strict shard result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: free-result-${{ matrix.shard }}
+          path: ${{ runner.temp }}/free-results/*.json
+          if-no-files-found: error
+
+      # bun's JUnit report from every child of this shard, the flaky retry
+      # included. Only trunk-flaky-tests reads it; no verdict does.
+      - name: Upload shard JUnit reports
+        if: always()
+        timeout-minutes: 3
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: free-junit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/free-junit/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Uploaded unconditionally (not just on failure): a flaky-pass run is
+      # GREEN — that's the point — so its evidence must survive green runs.
+      - name: Upload flake ledger
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-ledger-${{ matrix.shard }}
+          path: ${{ runner.temp }}/flake-ledger.jsonl
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Detect recovered failures for log retention
+        id: flake_spool
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/flake-ledger.jsonl" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # The quiet console omits assertion details. Preserve the original spool
+      # after a recovered retry too, so a green job retains its first failure.
+      - name: Upload shard logs on failure or recovered retry
+        if: failure() || steps.flake_spool.outputs.present == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: free-test-shard-logs-${{ matrix.shard }}
+          path: .context/free-test-logs/gstack-free-test-*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  free-tests-fork:
+    name: Free Tests (fork)
+    if: always()
+    needs: [free-suite]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require every free-suite shard
+        env:
+          FREE_SUITE_RESULT: ${{ needs.free-suite.result }}
+        run: test "$FREE_SUITE_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: free-plan
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: free-result-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/free-results
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: flake-ledger-*
+          path: ${{ runner.temp }}/flake-ledgers
+      - name: Summarize flaky passes absorbed by the serial retry
+        run: bun run scripts/test-health-report.ts flake-summary "$RUNNER_TEMP/flake-ledgers" >> "$GITHUB_STEP_SUMMARY"
+      - name: Require exact coverage and complete strict results
+        run: bun run scripts/test-free-shards.ts --ci-verify "$RUNNER_TEMP/free-plan.json" --results "$RUNNER_TEMP/free-results"
