@@ -265,6 +265,7 @@ export const FREE_ONLY_PR_FILES = [
   'scripts/test-health-report.ts',
   'scripts/bump-harness-version.ts',
   'scripts/eval-bg.ts',
+  '.github/workflows/fork-free-suite.yml', // Fork-only (cheese-work/gstack, CHE-5029): the free suite on GitHub-hosted runners; no paid case.
   '.github/workflows/actionlint.yml',
   '.github/workflows/arm-setup-smoke.yml',
   '.github/workflows/ci-image.yml',

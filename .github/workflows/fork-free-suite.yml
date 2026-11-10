@@ -1,5 +1,7 @@
 # Fork-only workflow (cheese-work/gstack, CHE-5029). Not in upstream garrytan/gstack,
-# so upstream merges never touch it.
+# so upstream merges never touch it. The one other fork edit is its one-line
+# entry in FREE_ONLY_PR_FILES (scripts/test-pr-profile.ts), which the workflow
+# inventory test (test/free-fixtures.test.ts) requires.
 #
 # Why: upstream's free-tests.yml runs the free-suite shards on the paid
 # Ubicloud label ubicloud-standard-8. This fork has no such runner, so those
