@@ -60,6 +60,11 @@ jobs:
           set -euo pipefail
           matrix=$(bun run scripts/test-free-shards.ts --ci-plan "$RUNNER_TEMP/free-plan.json" --shards "$FREE_SUITE_SHARDS" --shard-jobs "$FREE_SUITE_JOBS" --job-setup-seconds "$FREE_SUITE_SETUP_SECONDS")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      # Mirrors free-tests.yml. Needs the full-history checkout above: the
+      # ratchet compares the allowlist with its merge-base copy.
+      - name: Seed growth ratchet (60 s ceiling, shrink-only allowlist)
+        run: |
+          GSTACK_FREE_SEED_BASE="$(git merge-base HEAD origin/main)" bun test test/free-seed-ratchet.test.ts
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: free-plan

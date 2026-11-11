@@ -48,6 +48,20 @@ describe('fork free-suite workflow', () => {
     expect(fork.jobs['free-suite']['timeout-minutes']).toBe(upstream.jobs['free-suite']['timeout-minutes']);
   });
 
+  test('plan job keeps upstream seed ratchet with full history', () => {
+    const steps = (job: any) => job.steps as any[];
+    const ratchet = (wf: any) =>
+      steps(wf.jobs['free-plan']).find((s) => s.name === 'Seed growth ratchet (60 s ceiling, shrink-only allowlist)');
+    const checkout = (wf: any) => steps(wf.jobs['free-plan']).find((s) => String(s.uses).startsWith('actions/checkout@'));
+    expect(ratchet(fork)).toEqual(ratchet(upstream));
+    expect(ratchet(fork).run).toContain('GSTACK_FREE_SEED_BASE="$(git merge-base HEAD origin/main)"');
+    expect(checkout(fork).with['fetch-depth']).toBe(0);
+    expect(checkout(fork).with.filter).toBe('blob:none');
+    // The ratchet runs after the plan step, before the plan artifact upload.
+    const names = steps(fork.jobs['free-plan']).map((s) => s.name ?? s.uses);
+    expect(names.indexOf(ratchet(fork).name)).toBeGreaterThan(names.indexOf('Inventory and balance the complete free suite'));
+  });
+
   test('aggregate requires the suite and strict verification', () => {
     const agg = fork.jobs['free-tests-fork'];
     expect(agg.needs).toContain('free-suite');
