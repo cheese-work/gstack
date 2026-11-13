@@ -37,7 +37,7 @@ _BIN="$_SCRIPT_DIR"
 . "$(dirname "$0")/gstack-state-root.sh" 2>/dev/null || { echo "$0: cannot resolve the gstack state root: $(dirname "$0")/gstack-state-root.sh is missing. fix: reinstall with ./setup or /gstack-upgrade (docs/state-root.md)" >&2; exit 1; }
 gstack_state_root_select
 _GH="$_gstack_sr_root"
-_TEL=$("$_BIN/gstack-config" get telemetry 2>/dev/null || echo off)
+_TEL=off # fork (CHE-5564): telemetry is hard off
 # Plan B1: an unattended session writes no usage, sends no telemetry and never
 # drains or pushes the artifacts queue, whatever the inherited settings say. The
 # upgrade offer it skipped at start becomes one line here, read from the
@@ -72,16 +72,4 @@ if [ "$_SESSION_KIND" != "unattended" ]; then
   "$_BIN/gstack-brain-sync" --once 2>/dev/null || true
 fi
 
-# Local analytics (gated on telemetry setting).
-if [ "$_TEL" != "off" ]; then
-  echo '{"skill":"'"$SKILL_NAME"'","duration_s":"'"$_TEL_DUR"'","outcome":"'"$OUTCOME"'","browse":"'"$USED_BROWSE"'","session":"'"$SESSION_ID"'","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> "$_GH/analytics/skill-usage.jsonl" 2>/dev/null || true
-fi
-
-# Remote telemetry (opt-in, requires binary).
-if [ "$_TEL" != "off" ] && [ -x "$_BIN/gstack-telemetry-log" ]; then
-  "$_BIN/gstack-telemetry-log" \
-    --skill "$SKILL_NAME" --duration "$_TEL_DUR" --outcome "$OUTCOME" \
-    --used-browse "$USED_BROWSE" --session-id "$SESSION_ID" \
-    --error-message "$ERROR_MESSAGE" --failed-step "$FAILED_STEP" 2>/dev/null &
-fi
 echo "SKILL_END: recorded outcome=$OUTCOME duration_s=$_TEL_DUR"

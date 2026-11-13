@@ -82,10 +82,10 @@ VERSION_FILE="$GSTACK_DIR/VERSION"
 . "$GSTACK_DIR/bin/gstack-update-channel.sh" 2>/dev/null || gstack_update_channel() { echo main; }
 CHANNEL=$(gstack_update_channel "$GSTACK_DIR" 2>/dev/null) || CHANNEL=main
 case "$CHANNEL" in stable|main) ;; *) CHANNEL=main ;; esac
-REMOTE_RAW_BASE="${GSTACK_REMOTE_RAW_BASE:-https://raw.githubusercontent.com/garrytan/gstack}"
+REMOTE_RAW_BASE="${GSTACK_REMOTE_RAW_BASE:-https://raw.githubusercontent.com/cheese-work/gstack}"
 REMOTE_URL="${GSTACK_REMOTE_URL:-$REMOTE_RAW_BASE/$CHANNEL/VERSION}"
-REMOTE_REPO="${GSTACK_REMOTE_REPO:-https://github.com/garrytan/gstack.git}"
-COMPARE_API="${GSTACK_COMPARE_API:-https://api.github.com/repos/garrytan/gstack/compare}"
+REMOTE_REPO="${GSTACK_REMOTE_REPO:-https://github.com/cheese-work/gstack.git}"
+COMPARE_API="${GSTACK_COMPARE_API:-https://api.github.com/repos/cheese-work/gstack/compare}"
 
 # ─── Force flag (busts cache + snooze for standalone /gstack-upgrade) ──
 FORCE=0

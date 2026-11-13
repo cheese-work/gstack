@@ -103,7 +103,7 @@ export const CODEX_REVIEW_E2E_SECTIONS = [
 const SHARED_PREAMBLE_FIRST = ['Preamble (run first)', 'Preamble (after scope gate)'];
 const SHARED_PREAMBLE_LAST = 'Plan Status Footer';
 /** Preamble sections a hoisted SKILL.md keeps inline because they name the skill. */
-const INLINE_PREAMBLE = [...SHARED_PREAMBLE_FIRST, 'Question Tuning', 'Repo Ownership', 'Search Before Building', 'Telemetry (run last)'];
+const INLINE_PREAMBLE = [...SHARED_PREAMBLE_FIRST, 'Question Tuning', 'Repo Ownership', 'Search Before Building', 'Skill end (run last)'];
 
 interface H2Section {
   heading: string;
@@ -258,8 +258,8 @@ export function extractSkillBody(skillDir: string): string {
     let end = pointer;
     while (end + 1 < all.length && (shared.has(all[end + 1].heading)
       || INLINE_PREAMBLE.some(name => all[end + 1].heading.startsWith(name)))) end++;
-    if (!all.slice(pointer, end + 1).some(section => section.heading === 'Telemetry (run last)')) {
-      throw new Error(`skill-fixture: no "## Telemetry (run last)" closes the preamble in ${file}.`);
+    if (!all.slice(pointer, end + 1).some(section => section.heading === 'Skill end (run last)')) {
+      throw new Error(`skill-fixture: no "## Skill end (run last)" closes the preamble in ${file}.`);
     }
     [first, last] = [all[pointer], all[end]];
   } else {

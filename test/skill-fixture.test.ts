@@ -299,7 +299,7 @@ describe('real-skill pins: section lists used by E2E fixtures', () => {
     expect(out).toContain('## Step 4: Critical pass (core review)');
     expect(out).toContain('## Important Rules');
     // Drops the shared preamble and the untested workflow tail.
-    expect(out).not.toContain('## Telemetry (run last)');
+    expect(out).not.toContain('## Skill end (run last)');
     expect(out).not.toContain('## Step 5: Fix-First Review');
     expect(out).not.toContain('review/sections/review-army.md');
     // Step 4's sideways-sweep paragraph (plan D2 replaced the enum-only one) survives the extraction.
@@ -322,7 +322,7 @@ describe('real-skill pins: section lists used by E2E fixtures', () => {
     );
     const out = extractSkillSections(path.join(ROOT, 'review'), skeletonSections);
     expect(out).toContain('## Step 1.5: Scope Drift Detection');
-    expect(out).not.toContain('## Telemetry (run last)');
+    expect(out).not.toContain('## Skill end (run last)');
 
     const planCompletion = fs.readFileSync(
       path.join(ROOT, 'review', 'sections', 'plan-completion.md'), 'utf-8');
@@ -349,7 +349,7 @@ describe('real-skill pins: section lists used by E2E fixtures', () => {
     expect(out).not.toContain('## Global Retrospective Mode');
     expect(out).toContain('Read `~/.claude/skills/gstack/retro/sections/report-format.md` and execute it');
     expectMentions(out, [['stop', 'repo-scoped', 'result-save']], 'out');
-    expect(out).not.toContain('## Telemetry (run last)');
+    expect(out).not.toContain('## Skill end (run last)');
 
     const reportFormat = fs.readFileSync(
       path.join(ROOT, 'retro', 'sections', 'report-format.md'), 'utf-8');
@@ -362,7 +362,7 @@ describe('real-skill pins: section lists used by E2E fixtures', () => {
     if (!fs.existsSync(path.join(codexReview, 'SKILL.md'))) return; // gitignored artifact, absent in fresh checkouts
     const out = extractSkillSections(codexReview, CODEX_REVIEW_E2E_SECTIONS);
     expect(out).toContain('## Step 4: Critical pass (core review)');
-    expect(out).not.toContain('## Telemetry (run last)');
+    expect(out).not.toContain('## Skill end (run last)');
   });
 
   // Run 42571575838: the excerpt kept ~/.claude/skills/gstack/bin/gstack-codex-probe,
@@ -417,7 +417,7 @@ describe('real-skill pins: body/head extraction used by E2E fixtures', () => {
       const out = extractSkillBody(path.join(ROOT, skill));
       expect(out).not.toContain('## Preamble (run first)');
       expect(out).not.toContain('## Preamble (after scope gate)');
-      expect(out).not.toContain('## Telemetry (run last)');
+      expect(out).not.toContain('## Skill end (run last)');
       expect(out).not.toContain(SHARED_POINTER_HEADING);
       const full = readSkillStartup(path.join(ROOT, skill, 'SKILL.md'));
       expect(out.length).toBeLessThan(full.length * 0.75);
