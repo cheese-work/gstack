@@ -278,32 +278,7 @@ fi
 # ─── Step 4: Slow path — fetch remote version ────────────────
 mkdir -p "$STATE_DIR"
 
-# Fire Supabase install ping in background (parallel, non-blocking)
-# This logs an update check event for community health metrics via edge function.
-# If Supabase is not configured or telemetry is off, this is a no-op.
-if [ -z "${GSTACK_SUPABASE_URL:-}" ] && [ -f "$GSTACK_DIR/supabase/config.sh" ]; then
-  . "$GSTACK_DIR/supabase/config.sh"
-fi
-_SUPA_URL="${GSTACK_SUPABASE_URL:-}"
-_SUPA_KEY="${GSTACK_SUPABASE_ANON_KEY:-}"
-# Respect telemetry opt-out — don't ping Supabase if user set telemetry: off
-_TEL_TIER="$("$GSTACK_DIR/bin/gstack-config" get telemetry 2>/dev/null || true)"
-if [ -n "$_SUPA_URL" ] && [ -n "$_SUPA_KEY" ] && [ "${_TEL_TIER:-off}" != "off" ]; then
-  _OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  # Receipted (fail-open) and fully backgrounded: the receipt write happens
-  # inside the background subshell, so it can never block this script's exit.
-  _PING_FILE="$(mktemp "${TMPDIR:-/tmp}/gstack-update-ping-XXXXXX" 2>/dev/null)" || _PING_FILE=""
-  if [ -n "$_PING_FILE" ]; then
-    printf '{"version":"%s","os":"%s"}' "$LOCAL" "$_OS" > "$_PING_FILE"
-    _SUPA_HOST="${_SUPA_URL#*://}"; _SUPA_HOST="${_SUPA_HOST%%/*}"
-    GSTACK_HOME="$STATE_DIR" _receipted_curl open update-check "$_SUPA_HOST" update-check-ping "telemetry=$_TEL_TIER" "$_PING_FILE" \
-      curl -sf --max-time 5 \
-      -X POST "${_SUPA_URL}/functions/v1/update-check" \
-      -H "Content-Type: application/json" \
-      -H "apikey: ${_SUPA_KEY}" \
-      >/dev/null 2>&1 &
-  fi
-fi
+# Telemetry is hard off in the fork (CHE-5564): no Supabase update-check ping.
 
 # Resolve VERSION via a SHA-pinned raw URL. GitHub's branch-raw CDN
 # (raw.githubusercontent.com/<owner>/<repo>/<branch>/...) can serve stale

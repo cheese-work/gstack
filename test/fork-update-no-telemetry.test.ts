@@ -54,6 +54,43 @@ describe('gstack-update-check queries only the fork', () => {
   });
 });
 
+describe('gstack-update-check sends no telemetry ping', () => {
+  test('no request to Supabase even with telemetry: community and a Supabase URL configured', () => {
+    const dir = tmp('gstack-fork-ping-');
+    const install = path.join(dir, 'install');
+    const state = path.join(dir, 'state');
+    const shim = path.join(dir, 'shim');
+    const log = path.join(dir, 'requests.log');
+    fs.mkdirSync(path.join(install, 'bin'), { recursive: true });
+    fs.mkdirSync(state);
+    fs.mkdirSync(shim);
+    for (const n of ['gstack-config', 'gstack-egress-lib.sh', 'gstack-state-root.sh', 'gstack-egress-receipt', 'gstack-update-channel.sh']) {
+      fs.symlinkSync(path.join(ROOT, 'bin', n), path.join(install, 'bin', n));
+    }
+    fs.writeFileSync(path.join(install, 'VERSION'), '1.0.0\n');
+    fs.writeFileSync(path.join(state, 'config.yaml'), 'telemetry: community\n');
+    fs.writeFileSync(path.join(shim, 'curl'), `#!/usr/bin/env bash\necho "curl $*" >> "${log}"\necho 1.0.1\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(shim, 'git'), `#!/usr/bin/env bash\necho "git $*" >> "${log}"\nexit 0\n`, { mode: 0o755 });
+    try {
+      const r = spawnSync('bash', [path.join(ROOT, 'bin', 'gstack-update-check'), '--force'], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          PATH: `${shim}:${process.env.PATH}`, HOME: dir, GSTACK_DIR: install, GSTACK_HOME: state,
+          GSTACK_SUPABASE_URL: 'https://example.supabase.co', GSTACK_SUPABASE_ANON_KEY: 'k',
+        },
+      });
+      Bun.sleepSync(1000); // the old ping ran in a background subshell
+      const requests = fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '';
+      expect(requests, r.stdout + r.stderr).toContain('cheese-work/gstack');
+      expect(requests).not.toContain('supabase');
+      expect(requests).not.toContain('update-check');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('gstack-skill-start: silent fork upgrade, no telemetry prompt', () => {
   function runFresh(lakeSeen: boolean): { out: string; upgradeCalls: string } {
     const dir = tmp('gstack-fork-start-');
