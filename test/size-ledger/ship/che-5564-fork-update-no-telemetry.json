@@ -1,0 +1,4 @@
+{
+  "bytes": -62,
+  "why": "Fork telemetry-off preamble rename and removed telemetry prose shrink the ship union (CHE-5564); recorded on the upstream sync because main never carried the ledger entry (CHE-5029)"
+}

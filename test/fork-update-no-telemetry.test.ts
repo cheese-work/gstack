@@ -153,7 +153,7 @@ describe('telemetry is hard off', () => {
 
 describe('generated skills carry no telemetry section', () => {
   test('no SKILL.md contains "Telemetry (run last)" or gstack-telemetry-log', () => {
-    const files = execFileSync('git', ['ls-files', '--', '*SKILL.md', '*SKILL.md.tmpl'], { cwd: ROOT, encoding: 'utf8' })
+    const files = execFileSync('git', ['ls-files', '--', '*SKILL.md', '*SKILL.md.tmpl'], { cwd: ROOT, encoding: 'utf8', timeout: 30_000 })
       .split('\n')
       .filter((f) => f && !f.startsWith('test/fixtures/'));
     expect(files.length).toBeGreaterThan(50);
