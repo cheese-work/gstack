@@ -81,7 +81,7 @@ export function generateInvokeSkill(ctx: TemplateContext, args?: string[]): stri
     'Shared preamble (load first)',
     'Search Before Building',
     'Contributor Mode',
-    'Telemetry (run last)',
+    'Skill end (run last)',
     'Step 0: Detect platform and base branch',
     'Review Readiness Dashboard',
     'Plan File Review Report',

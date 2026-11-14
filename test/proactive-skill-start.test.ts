@@ -147,14 +147,14 @@ describe('gstack-skill-start PROACTIVE status line', () => {
     expect(rulesOf(shipped.section).length).toBeGreaterThan(4);
   }, 60_000);
 
-  test('a stored off answers the one-time proactive prompt: no prompt block, marker written; core still asks once telemetry was answered', () => {
+  test('a stored off answers the one-time proactive prompt: no prompt block, marker written; core still asks once the lake intro was answered', () => {
     const cases: Array<[string, boolean]> = [
       ['update_check: false\ntelemetry: off\n', true],
       ['update_check: false\ntelemetry: off\nproactive: off\n', false],
     ];
     for (const [config, asked] of cases) {
       const state = freshState(config);
-      fs.writeFileSync(path.join(state, '.telemetry-prompted'), '');
+      fs.writeFileSync(path.join(state, '.completeness-intro-seen'), '');
       try {
         const out = runStart(path.join(BIN, 'gstack-skill-start'), state);
         expect(out.includes('GSTACK_INSTRUCTION_BEGIN: proactive-prompt'), config).toBe(asked);

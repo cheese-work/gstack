@@ -1580,7 +1580,6 @@
     "test/team-init-hook-shell-neutral.test.ts": 1166,
     "test/team-mode.test.ts": 2205,
     "test/telemetry-repo-strip.test.ts": 47,
-    "test/telemetry.test.ts": 7114,
     "test/template-context-parity.test.ts": 21,
     "test/terse-build.test.ts": 27,
     "test/test-fixture-root.test.ts": 329,

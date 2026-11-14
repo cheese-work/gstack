@@ -22,7 +22,6 @@ const SCRIPT = fs.readFileSync(path.join(ROOT, 'bin', 'gstack-skill-start'), 'ut
 /** flow id -> distinctive literal that must live in the script only. */
 const MOVED: Record<string, string> = {
   'lake-intro': 'https://garryslist.org/posts/boil-the-ocean',
-  'telemetry-prompt': 'Help gstack get better! (recommended)',
   'proactive-prompt': "Turn it off — I'll type /commands myself",
   'first-run-tip': 'Fresh repo — shape it first with',
   'first-loop-tip': 'gstack pays off when you complete one loop',
@@ -31,7 +30,7 @@ const MOVED: Record<string, string> = {
   'writing-style-migration': 'Keep default or restore terse?',
   'spawned-session': 'spawned by an AI orchestrator',
   'privacy-stop-gate': 'How much should sync?',
-  'upgrade-flow': 'Inline upgrade flow',
+  'upgrade-flow': 'JUST_UPGRADED <from> <to>',
 };
 
 function generatedSkillFiles(): string[] {

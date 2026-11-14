@@ -374,20 +374,14 @@ describe('Update check preamble', () => {
     });
   }
 
-  test('bin/gstack-skill-start emits the UPGRADE_AVAILABLE interpretation as the upgrade-flow instruction block', () => {
-    // Phase 2 successor of the per-render UPGRADE_AVAILABLE prose pin: the
-    // interpretation now lives in the script's instruction-emission layer,
-    // wrapped in GSTACK_INSTRUCTION_BEGIN/upgrade-flow/SESSION_ID markers and
-    // emitted only when the gate fires. Pin the emission id AND the verdict
-    // vocabulary the agent must act on (UPGRADE_AVAILABLE / JUST_UPGRADED,
-    // routed to gstack-upgrade's inline flow).
+  test('bin/gstack-skill-start upgrades silently on UPGRADE_AVAILABLE and notes JUST_UPGRADED (CHE-5564)', () => {
+    // Fork: no upgrade question. UPGRADE_AVAILABLE runs gstack-upgrade without
+    // a prompt; JUST_UPGRADED still emits a short upgrade-flow note, bound to
+    // the live SESSION_ID by the emission wrapper.
     const script = fs.readFileSync(path.join(ROOT, 'bin', 'gstack-skill-start'), 'utf-8');
-    expect(script).toContain('_emit_block upgrade-flow');
-    expect(script).toContain('UPGRADE_AVAILABLE <old> <new>');
+    expect(script).toContain('"$_BIN/gstack-upgrade"');
     expect(script).toContain('JUST_UPGRADED <from> <to>');
-    expect(script).toContain('gstack-upgrade/SKILL.md');
-    // The emission wrapper itself binds every block to the live SESSION_ID —
-    // the render-side rule above is only sound if this stays true.
+    expect(script).not.toContain('AskUserQuestion with 4 options');
     expect(script).toContain('GSTACK_INSTRUCTION_BEGIN: $1 $_SESSION_ID');
   });
 

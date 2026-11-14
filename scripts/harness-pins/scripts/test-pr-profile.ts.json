@@ -1,1 +1,1 @@
-{"blob":"285f2a8b910fdf6503c555810a96995c7615f9df","since":6,"nonBehavioral":"test-pr-profile.ts only repoints paths and an import to files that moved unchanged into crew/ (GST-1833), on top of main's plain-title entries that no PR-gate case reads; no verdict can change"}
+{"blob":"51f07a2710492d30aa86cc31079e4b277bf85eaa","since":6,"nonBehavioral":"fork-only: one FREE_ONLY_PR_FILES entry classifying the fork's free-suite workflow; no eval case or verdict reads it"}
