@@ -60,7 +60,7 @@ export function routerSection(arm: Exclude<RouterArm, 'none'>, base = process.en
   const skill = arm === 'before'
     ? spawnSync('git', ['show', `${base}:SKILL.md`], { cwd: ROOT, encoding: 'utf8', timeout: 10_000 }).stdout
     : fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf8');
-  return sliceBetween(skill, '## Route first', 'Best-effort, record') + sliceBetween(skill, '**Routing rules', 'If the user opts out');
+  return sliceBetween(skill, '## Route first', 'If `PROACTIVE` is `false`') + sliceBetween(skill, '**Routing rules', 'If the user opts out');
 }
 
 /** The candidate's prompt: the router section and the request, or under `none` the request alone. */

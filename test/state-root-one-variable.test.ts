@@ -36,9 +36,9 @@ for (const variable of ['GSTACK_HOME', 'GSTACK_STATE_ROOT', 'GSTACK_STATE_DIR'] 
         // config
         expect(run('bash', [path.join(BIN, 'gstack-config'), 'set', 'telemetry', 'anonymous']).status).toBe(0);
         expect(fs.readFileSync(path.join(root, 'config.yaml'), 'utf-8')).toContain('telemetry: anonymous');
-        // telemetry + analytics log
+        // telemetry is hard off in the fork (CHE-5564): exit 0, no analytics log anywhere
         expect(run('bash', [path.join(BIN, 'gstack-telemetry-log'), '--skill', 'qa', '--duration', '1', '--outcome', 'success', '--session-id', 'one-var-1', '--no-sweep']).status).toBe(0);
-        expect(fs.readFileSync(path.join(root, 'analytics', 'skill-usage.jsonl'), 'utf-8')).toContain('"skill":"qa"');
+        expect(fs.existsSync(path.join(root, 'analytics', 'skill-usage.jsonl'))).toBe(false);
         // egress ledger
         const receipt = run('bun', [path.join(BIN, 'gstack-egress-receipt'), 'write', '--sink', 'test', '--host', 'example.invalid', '--class', 'test', '--no-payload', '--consent', 'test']);
         expect(receipt.status).toBe(0);

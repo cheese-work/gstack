@@ -223,7 +223,10 @@ READY_RECEIPT: <state root>/ship-queue/ready/<repo key>/42-<head>.json (notes pu
 ```
 
 Under `changelog_fragments`, a `READY_RECEIPT:` line follows, written only when
-every check above passed; `land` refuses a pin without one.
+every check above passed; `land` refuses a pin without one. It says `notes
+pushed` only once origin holds the note; otherwise `ready` refuses with
+[`QUEUE_READY_NOTE_UNPUSHED`](troubleshooting.md#queue-ready-note-unpushed),
+as it does under a train, because `land` reads the note on origin.
 
 CI's Version Gate (`scripts/compare-pr-version.ts`) accepts that head as
 unstamped when `VERSION` and `package.json`'s version match its merge base, the
@@ -275,6 +278,14 @@ are counted one each. A workflow run that failed without starting any job
 counts as a failed check `<workflow> (run <id>, no jobs)` unless a later run of
 the same workflow replaced it; a run cancelled before any job is not counted.
 An unreadable list is unknown, never green.
+
+When a check counts as passing only because a newer run from another check
+suite replaced a red one (a branch-only `free-tests.yml` dispatch beside the red
+`pull_request` run, which tested the merge with the base), `ready` prints
+`CI_SUPERSEDED: <check> red run <id> replaced by <id> (suite <a> → <b>)` under
+the `ci:` line, one per replaced run, and `land` prints the same under its `CI:`
+line. It is a warning and changes no verdict; a rerun in the same suite prints
+nothing ([what to do](troubleshooting.md#ci-superseded)).
 
 It refuses (`QUEUE_NOT_READY`) when the working tree has tracked edits, HEAD
 is not the PR's pushed head, CI at that exact head is not green, or the pregate
@@ -732,9 +743,12 @@ slot. The queue enforces this at every step from the PR body alone:
   `REVIEW_TARGETED:` line) when a targeted class the head needs has no done
   targeted pass in the receipt, and `QUEUE_RECEIPT_EXCEPTION_INVALID` when an
   owner exception it records does not stand ([the ship receipt](#ship-receipt)).
-  There is no flag around it. Before any of these checks, `ready` fetches
+  There is no flag around it. Before any of these checks, and before it
+  chooses the train or plain path from the policy, `ready` fetches
   `origin/<base>` and reads the policy and every receipt field against that
-  fresh ref, so a lane clone whose base is behind the remote never turns a good
+  fresh ref (a clone with a missing or stale base ref would otherwise run plain
+  `ready` under a train policy and skip the screen, conflict and READY-receipt
+  steps), so a lane clone whose base is behind the remote never turns a good
   receipt into `RECEIPT_INVALID` (GST-2232); a failed fetch refuses with
   `QUEUE_BASE_UNFETCHED` before anything is compared. The stamp path of `land`
   refuses the same way; `land --pin` (`merge: direct`) refuses a failed fetch
@@ -1912,6 +1926,20 @@ base is still the one that link read). The line reads `FIX_CHECK: reviewed <path
 reason (`range_base <sha12> does not hold the reviewed tree`); a link that is
 stale or ungranted refuses with its reason and `; fix-check at <sha12>, link <k>
 of <n>`. Either way nothing in the chain counts.
+
+<a id="fix-check-docs-bridge"></a>One gap is not a gap: the oldest link's `range_base` may follow the reviewed
+tree's commit by commits that change only authored docs or release metadata,
+such as the Step 14.5 docs commit (harness-evals#361, GST-2294). finish walks
+`range_base`'s first parents back to the nearest commit holding the reviewed tree
+and accepts the range when every commit after it is a single-parent commit whose
+every path it routes as docs or release metadata, printing
+`FIX_CHECK_DOCS_BRIDGE: range_base <sha12> follows the reviewed commit <sha12> by
+docs or release metadata only (<commits>)`. Those docs still take the docs route
+and its recheck. A code or test commit in between, a merge, a `range_base` the
+reviewed commit descends from, and a `range_base` on another branch still refuse.
+Pass `--reviewed-tree` as the tree the bound review read, never the fix-check's
+own tree: with the fix-check's tree, `range_base` sits before the "reviewed"
+commit and finish refuses (#4267, #4270).
 
 <a id="test-code"></a>
 <a id="uid-sidecar"></a>
