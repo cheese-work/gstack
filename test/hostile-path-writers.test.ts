@@ -101,10 +101,9 @@ describe('bin writers under a path containing an apostrophe', () => {
     expect(r.stdout).toContain('DERIVE: ok');
   });
 
-  test('gstack-telemetry-log appends a row with the error message REDACTED (not just exit 0)', () => {
-    // The bin's tier gate (`gstack-config get telemetry`, default off) exits 0
-    // WITHOUT writing — enable the anonymous tier via the config file that
-    // gstack-config resolves from GSTACK_HOME (already set by runBin).
+  test('gstack-telemetry-log writes no row under an apostrophe path (fork: telemetry hard off, CHE-5564)', () => {
+    // Fork (CHE-5564): the bin exits 0 without writing whatever the config says.
+    // Enable the anonymous tier to prove the hard-off, not the default-off gate.
     fs.writeFileSync(path.join(STATE, 'config.yaml'), 'telemetry: anonymous\n');
 
     // 36 alnum chars after ghp_ — matches the github.pat redaction pattern.
@@ -133,19 +132,6 @@ describe('bin writers under a path containing an apostrophe', () => {
     expect(r.stderr ?? '').not.toContain('Expected ";"');
 
     const jsonl = path.join(STATE, 'analytics', 'skill-usage.jsonl');
-    expect(fs.existsSync(jsonl)).toBe(true);
-    const rows = fs.readFileSync(jsonl, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
-    const row = rows.find((j) => j.skill === 'hostile-telemetry-probe');
-    expect(row).toBeDefined();
-    expect(row.outcome).toBe('failure');
-    expect(row.session_id).toBe('hostile-telemetry-session');
-    // #1947: error_message flows through redactFindingSpans before it touches
-    // disk — the credential span becomes <REDACTED-{pattern.id}> while the
-    // rest of the message survives for crash triage. Asserting the marker
-    // (not merely null) proves the bun -e engine call actually ran under the
-    // apostrophe path instead of fail-closing the whole message away.
-    expect(row.error_message).toContain('<REDACTED-github.pat>');
-    expect(row.error_message).toContain('auth failed for token');
-    expect(row.error_message).not.toContain(FAKE_PAT);
+    expect(fs.existsSync(jsonl)).toBe(false);
   });
 });

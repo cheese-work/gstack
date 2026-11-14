@@ -23,7 +23,7 @@ function mainRouterSection(arm: 'before' | 'current'): string {
   const skill = arm === 'before'
     ? spawnSync('git', ['show', `${BASE}:SKILL.md`], { cwd: ROOT, encoding: 'utf8', timeout: 10_000 }).stdout
     : fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf8');
-  return sliceBetween(skill, '## Route first', 'Best-effort, record') + sliceBetween(skill, '**Routing rules', 'If the user opts out');
+  return sliceBetween(skill, '## Route first', 'If `PROACTIVE` is `false`') + sliceBetween(skill, '**Routing rules', 'If the user opts out');
 }
 
 function mainPrompt(fixture: Fixture, arm: 'before' | 'current'): string {

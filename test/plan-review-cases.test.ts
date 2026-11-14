@@ -599,7 +599,7 @@ describe('Eng approved-work decision gate', () => {
       /does not make every independent lane wait/i]);
     const skeleton = readFileSync('plan-eng-review/SKILL.md.tmpl', 'utf8');
     ordered(skeleton, ['{{SECTION:review-sections}}', '## Recovery routing', '**Paused question:**', '**Blocked outcome:**', '## Section self-check', '{{EXIT_PLAN_MODE_GATE}}',
-      /after the gate passes: \*\*Telemetry/i, '{{BRAIN_CACHE_REFRESH}}', /call ExitPlanMode for the selected next step only when the host is in plan mode/i]);
+      /after the gate passes: \*\*Skill end/i, '{{BRAIN_CACHE_REFRESH}}', /call ExitPlanMode for the selected next step only when the host is in plan mode/i]);
     expect(skeleton).not.toContain('run approval check 0 below');
     const pause = compactProse(skeleton.split('**Paused question:**')[1]!.split('**Blocked outcome:**')[0]!);
     expectMentions(pause, [['without', 'exitplanmode', 'completion']], 'pause');

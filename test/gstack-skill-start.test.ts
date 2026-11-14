@@ -499,7 +499,8 @@ describe('gstack-skill-start behavior', () => {
       end({});
       const calls = fs.readFileSync(log, 'utf-8');
       expect(calls).toMatch(/^gstack-brain-sync --once/m);
-      expect(calls).toMatch(/^gstack-telemetry-log /m);
+      // Fork (CHE-5564): telemetry is hard off, so skill-end never calls the logger.
+      expect(calls).not.toMatch(/^gstack-telemetry-log /m);
       expect(calls).toMatch(/^gstack-update-check/m);
       expect(fs.readdirSync(path.join(gh, '.brain-queue.d')).length).toBeGreaterThan(0);
     } finally {
@@ -573,12 +574,12 @@ describe('gstack-skill-start behavior', () => {
       const sid2 = second.match(/^SESSION_ID: (\S+)$/m)?.[1];
       const headers2 = second.match(/^GSTACK_INSTRUCTION_BEGIN: .*$/gm) ?? [];
       for (const h of headers2) expect(h.endsWith(` ${sid2}`)).toBe(true);
-      // Sequencing: telemetry-prompt is gated on the lake ack, so it must not
-      // appear while .completeness-intro-seen is absent.
+      // Fork (CHE-5564): the telemetry prompt is removed, so it never fires,
+      // before or after the lake ack.
       expect(first).not.toContain('GSTACK_INSTRUCTION_BEGIN: telemetry-prompt');
       fs.writeFileSync(path.join(freshGh, '.completeness-intro-seen'), '');
       const third = runStart([], { GSTACK_HOME: freshGh });
-      expect(third).toContain('GSTACK_INSTRUCTION_BEGIN: telemetry-prompt');
+      expect(third).not.toContain('GSTACK_INSTRUCTION_BEGIN: telemetry-prompt');
       expect(third).not.toContain('GSTACK_INSTRUCTION_BEGIN: lake-intro');
       // Ack-at-emit means the loop tip from run 2 never re-fires.
       expect(third).not.toContain('GSTACK_INSTRUCTION_BEGIN: first-loop-tip');

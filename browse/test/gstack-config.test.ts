@@ -51,10 +51,10 @@ afterEach(() => {
 describe('gstack-config', () => {
   // ─── get ──────────────────────────────────────────────────
   test('get on missing file returns the default, exit 0', () => {
-    // auto_upgrade has a default of false; get falls back to the defaults table.
+    // auto_upgrade has a default of true in the fork (CHE-5564); get falls back to the defaults table.
     const { exitCode, stdout } = run(['get', 'auto_upgrade']);
     expect(exitCode).toBe(0);
-    expect(stdout).toBe('false');
+    expect(stdout).toBe('true');
   });
 
   test('get unknown key on missing file returns empty, exit 1 (#2611)', () => {
