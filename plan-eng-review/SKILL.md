@@ -241,15 +241,15 @@ BRANCH=$(~/.claude/skills/gstack/bin/gstack-slug --get BRANCH 2>/dev/null)
 jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg skill "SKILL_NAME" --arg branch "$BRANCH" --arg insight "ONE_LINE_SUMMARY" '{ts:$ts,skill:$skill,branch:$branch,insight:$insight}' >> "$GSTACK_STATE_ROOT/analytics/eureka.jsonl" 2>/dev/null || true
 ```
 
-## Telemetry (run last)
+## Skill end (run last)
 
-After workflow completion, log telemetry with ONE command. OUTCOME is
+After workflow completion, run ONE command. OUTCOME is
 success/error/abort/unknown; `SESSION_ID` and `TEL_START` are the values the
-preamble's skill-start output echoed. It also drains the artifacts-sync queue
-(the former skill-end sync step — do not run gstack-brain-sync separately).
+preamble's skill-start output echoed. It releases the session lease and drains
+the artifacts-sync queue (do not run gstack-brain-sync separately). It records
+no telemetry.
 
-**PLAN MODE EXCEPTION — ALWAYS RUN:** This writes telemetry to
-`$GSTACK_STATE_ROOT/analytics/`, matching preamble analytics writes.
+**PLAN MODE EXCEPTION — ALWAYS RUN:** This only writes local session state.
 
 ```bash
 ~/.claude/skills/gstack/bin/gstack-skill-end --skill "plan-eng-review" --outcome OUTCOME \
@@ -260,7 +260,7 @@ preamble's skill-start output echoed. It also drains the artifacts-sync queue
 Replace `OUTCOME` and `USED_BROWSE` (yes/no) before running; substitute
 `SESSION_ID`/`TEL_START` from the skill-start echoes. `ERROR_MESSAGE`/`FAILED_STEP`
 are "" unless outcome is error. If the command is missing (stale install), skip
-telemetry — it never blocks the workflow.
+it — it never blocks the workflow.
 
 ## Plan Status Footer
 
@@ -451,7 +451,7 @@ Follow its instructions from top to bottom, **skipping these sections when prese
 - Shared preamble (load first)
 - Search Before Building
 - Contributor Mode
-- Telemetry (run last)
+- Skill end (run last)
 - Step 0: Detect platform and base branch
 - Review Readiness Dashboard
 - Plan File Review Report
@@ -498,9 +498,9 @@ outputs steps 1–4 for changed outputs before choosing navigation again. Unchan
 may reuse their successful Review Log. If a final gate discovers stale evidence,
 follow **Blocked outcome** first; then resume here.
 
-**Blocked outcome:** Stop the review and report `BLOCKED`, the missing path/work, actual attempts and what is needed to resume. Label complete chat-only output **not persisted**; it supplies no saved-review or completion credit. If startup values and a permitted telemetry command are available, run **Telemetry (run last)** once with `OUTCOME=error` and the actual `ERROR_MESSAGE`/`FAILED_STEP`. Do not call ExitPlanMode. Resume at the failed step using Recovery routing.
+**Blocked outcome:** Stop the review and report `BLOCKED`, the missing path/work, actual attempts and what is needed to resume. Label complete chat-only output **not persisted**; it supplies no saved-review or completion credit. If startup values and a permitted telemetry command are available, run **Skill end (run last)** once with `OUTCOME=error` and the actual `ERROR_MESSAGE`/`FAILED_STEP`. Do not call ExitPlanMode. Resume at the failed step using Recovery routing.
 
-**Report-back outcome:** The caller forbids the report file or required Review Log. Present Required outputs steps 1 and 4 as **not persisted**; skip navigation, Read-back, the EXIT PLAN MODE GATE and ExitPlanMode. Run permitted **Telemetry (run last)** with `OUTCOME=success`. Report `DONE` and `PERSISTED: no`; the last line is `PERSIST: ` plus the filled `gstack-review-log` command for the caller to run. No saved-review credit until then.
+**Report-back outcome:** The caller forbids the report file or required Review Log. Present Required outputs steps 1 and 4 as **not persisted**; skip navigation, Read-back, the EXIT PLAN MODE GATE and ExitPlanMode. Run permitted **Skill end (run last)** with `OUTCOME=success`. Report `DONE` and `PERSISTED: no`; the last line is `PERSIST: ` plus the filled `gstack-review-log` command for the caller to run. No saved-review credit until then.
 
 ## Section self-check (before you finish)
 
@@ -534,7 +534,7 @@ an unrecovered save cannot pass. If any check fails, follow **Blocked outcome**
 without success telemetry or ExitPlanMode. Body prose cannot replace the
 separate terminal structured report.
 
-After the gate passes: **Telemetry (run last)** once with `OUTCOME=success`, then cache refresh. Make no further working-plan or approval changes between verification and exit.
+After the gate passes: **Skill end (run last)** once with `OUTCOME=success`, then cache refresh. Make no further working-plan or approval changes between verification and exit.
 
 ## Brain Cache Background Refresh
 

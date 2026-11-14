@@ -74,15 +74,15 @@ Write (free-form only after confirmation; its words go in that file too, with `-
 
 Exit code 2 = rejected as not user-originated; do not retry. On success: "Set `<id>` → `<preference>`. Active immediately."
 
-## Telemetry (run last)
+## Skill end (run last)
 
-After workflow completion, log telemetry with ONE command. OUTCOME is
+After workflow completion, run ONE command. OUTCOME is
 success/error/abort/unknown; `SESSION_ID` and `TEL_START` are the values the
-preamble's skill-start output echoed. It also drains the artifacts-sync queue
-(the former skill-end sync step — do not run gstack-brain-sync separately).
+preamble's skill-start output echoed. It releases the session lease and drains
+the artifacts-sync queue (do not run gstack-brain-sync separately). It records
+no telemetry.
 
-**PLAN MODE EXCEPTION — ALWAYS RUN:** This writes telemetry to
-`$GSTACK_STATE_ROOT/analytics/`, matching preamble analytics writes.
+**PLAN MODE EXCEPTION — ALWAYS RUN:** This only writes local session state.
 
 ```bash
 ~/.claude/skills/gstack/bin/gstack-skill-end --skill "canary" --outcome OUTCOME \
@@ -93,7 +93,7 @@ preamble's skill-start output echoed. It also drains the artifacts-sync queue
 Replace `OUTCOME` and `USED_BROWSE` (yes/no) before running; substitute
 `SESSION_ID`/`TEL_START` from the skill-start echoes. `ERROR_MESSAGE`/`FAILED_STEP`
 are "" unless outcome is error. If the command is missing (stale install), skip
-telemetry — it never blocks the workflow.
+it — it never blocks the workflow.
 
 ## BROWSER SETUP (Aside — run this check BEFORE any browser step)
 

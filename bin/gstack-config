@@ -82,7 +82,7 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           #   telemetry.
 #
 # ─── Updates ─────────────────────────────────────────────────────────
-# auto_upgrade: false       # true = silently upgrade on session start
+# auto_upgrade: true        # true = silently upgrade on session start (fork default)
 # update_check: true        # false = suppress version check notifications
 # update_channel: auto      # auto   = stable when team_mode is true, else main
 #                           # stable = the weekly tagged release (refs/heads/stable)
@@ -330,7 +330,7 @@ lookup_default() {
     proactive) echo "core" ;; # core | all | off (true = all, false = off); core suggests only /office-hours, /review, /qa, /ship
     routing_declined) echo "false" ;;
     telemetry) echo "off" ;;
-    auto_upgrade) echo "false" ;;
+    auto_upgrade) echo "true" ;; # fork: silent update from cheese-work/gstack (CHE-5564)
     update_check) echo "true" ;;
     update_channel) echo "auto" ;; # auto | stable | main — bin/gstack-update-channel.sh resolves auto (docs/releases.md)
     skill_prefix) echo "false" ;;

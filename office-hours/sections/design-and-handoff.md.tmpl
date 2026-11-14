@@ -532,16 +532,7 @@ D) Not now — I'll run a review later
   ❌ Review gaps compound; problems get more expensive after code exists
 Net: 15 minutes of structured review now against rework risk later.
 
-On the user's SELECTION of A/B/C (not on invocation success), log the handoff, then invoke
-the chosen skill via the **Skill tool** (it auto-discovers the design doc). In both log
-commands, replace `SESSION_ID` with the value the skill-start output echoed:
-```bash
-~/.claude/skills/gstack/bin/gstack-telemetry-log --event-type handoff --skill office-hours --outcome accepted --session-id "SESSION_ID" 2>/dev/null || true
-```
-On D, log declined and stop:
-```bash
-~/.claude/skills/gstack/bin/gstack-telemetry-log --event-type handoff --skill office-hours --outcome declined --session-id "SESSION_ID" 2>/dev/null || true
-```
+On the user's SELECTION of A/B/C, invoke the chosen skill via the **Skill tool** (it auto-discovers the design doc). On D, stop.
 
 The design doc at `~/.gstack/projects/` is automatically discoverable by downstream skills — they will read it during their pre-review system audit.
 

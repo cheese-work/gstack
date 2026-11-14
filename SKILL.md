@@ -119,15 +119,15 @@ empty result, not a skipped step.
 
 Do not log obvious facts or one-time transient errors.
 
-## Telemetry (run last)
+## Skill end (run last)
 
-After workflow completion, log telemetry with ONE command. OUTCOME is
+After workflow completion, run ONE command. OUTCOME is
 success/error/abort/unknown; `SESSION_ID` and `TEL_START` are the values the
-preamble's skill-start output echoed. It also drains the artifacts-sync queue
-(the former skill-end sync step — do not run gstack-brain-sync separately).
+preamble's skill-start output echoed. It releases the session lease and drains
+the artifacts-sync queue (do not run gstack-brain-sync separately). It records
+no telemetry.
 
-**PLAN MODE EXCEPTION — ALWAYS RUN:** This writes telemetry to
-`$GSTACK_STATE_ROOT/analytics/`, matching preamble analytics writes.
+**PLAN MODE EXCEPTION — ALWAYS RUN:** This only writes local session state.
 
 ```bash
 ~/.claude/skills/gstack/bin/gstack-skill-end --skill "gstack" --outcome OUTCOME \
@@ -138,7 +138,7 @@ preamble's skill-start output echoed. It also drains the artifacts-sync queue
 Replace `OUTCOME` and `USED_BROWSE` (yes/no) before running; substitute
 `SESSION_ID`/`TEL_START` from the skill-start echoes. `ERROR_MESSAGE`/`FAILED_STEP`
 are "" unless outcome is error. If the command is missing (stale install), skip
-telemetry — it never blocks the workflow.
+it — it never blocks the workflow.
 
 ## Plan Status Footer
 
@@ -161,14 +161,6 @@ This is the gstack router. Its one job is to send the request to the right skill
    fallback-browser skills below only when the user is clearly on that path (Linux,
    Windows, or Aside closed); on Aside there is nothing to open or import.
 3. Otherwise, route by the rules below. If nothing matches, answer directly.
-
-Best-effort, record which way you routed (never block on it). Set `ROUTE_OUTCOME` to
-`browse` (sent to /browse), `routed` (sent to another skill), or `direct` (answered
-directly, no skill matched), and replace `SESSION_ID` with the value the skill-start
-output echoed:
-```bash
-~/.claude/skills/gstack/bin/gstack-telemetry-log --event-type route --skill gstack --outcome ROUTE_OUTCOME --session-id "SESSION_ID" 2>/dev/null || true
-```
 
 If `PROACTIVE` is `false` or `off`: do not proactively invoke or suggest other gstack
 skills during this session, including by asking whether to run one ("want me to run /X?").

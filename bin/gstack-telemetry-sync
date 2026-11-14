@@ -10,6 +10,9 @@
 #   GSTACK_DIR                 — override auto-detected gstack root
 #   GSTACK_SUPABASE_URL        — override Supabase project URL
 set -uo pipefail
+# cheese-work fork (CHE-5564): telemetry is hard off. No event is written or sent, whatever the config says.
+exit 0
+
 
 GSTACK_DIR="${GSTACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 . "$(dirname "$0")/gstack-state-root.sh" 2>/dev/null || { echo "$0: cannot resolve the gstack state root: $(dirname "$0")/gstack-state-root.sh is missing. fix: reinstall with ./setup or /gstack-upgrade (docs/state-root.md)" >&2; exit 1; }

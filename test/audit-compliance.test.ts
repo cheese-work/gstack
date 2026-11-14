@@ -50,9 +50,8 @@ describe('Audit compliance', () => {
     expect(skillStart).toContain('gstack-telemetry-log');
     // End-of-skill telemetry (gstack-skill-end) must also be conditional
     const skillEnd = readFileSync(join(ROOT, 'bin/gstack-skill-end'), 'utf-8');
-    expect(skillEnd).toContain('_TEL" != "off"');
-    expect(skillEnd).toContain('-x ');
-    expect(skillEnd).toContain('gstack-telemetry-log');
+    // Fork (CHE-5564): telemetry is hard off; the end-of-skill script sends none.
+    expect(skillEnd).not.toContain('gstack-telemetry-log');
     // The render-side epilogue prose survives in the resolvers and hands off
     // to gstack-skill-end.
     const preambleDir = join(ROOT, 'scripts/resolvers/preamble');
@@ -60,7 +59,7 @@ describe('Audit compliance', () => {
       ? readdirSync(preambleDir).filter(f => f.endsWith('.ts')).map(f => readFileSync(join(preambleDir, f), 'utf-8'))
       : [];
     const preamble = submoduleFiles.join('\n');
-    const completionIdx = preamble.indexOf('Telemetry (run last)');
+    const completionIdx = preamble.indexOf('Skill end (run last)');
     expect(completionIdx).toBeGreaterThan(-1);
     expect(preamble.slice(completionIdx)).toContain('gstack-skill-end');
   });
@@ -139,6 +138,7 @@ describe('Audit compliance', () => {
     expect(telLog).toContain('if [ "$TIER" = "off" ]');
     expect(telLog).toMatch(/if \[ "\$TIER" = "off" \][\s\S]{0,200}?exit 0/);
 
+    // Fork (CHE-5564): no generated skill invokes the telemetry binary at all.
     const skills = getAllSkillMds();
     let checked = 0;
     for (const { name, content } of skills) {
@@ -151,7 +151,6 @@ describe('Audit compliance', () => {
         expect(line, `${name}: telemetry call must not surface errors`).toContain('2>/dev/null');
       }
     }
-    // Guard against the scan silently matching nothing.
-    expect(checked).toBeGreaterThan(0);
+    expect(checked).toBe(0);
   });
 });

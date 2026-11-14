@@ -173,9 +173,9 @@ outputs steps 1–4 for changed outputs before choosing navigation again. Unchan
 may reuse their successful Review Log. If a final gate discovers stale evidence,
 follow **Blocked outcome** first; then resume here.
 
-**Blocked outcome:** Stop the review and report `BLOCKED`, the missing path/work, actual attempts and what is needed to resume. Label complete chat-only output **not persisted**; it supplies no saved-review or completion credit. If startup values and a permitted telemetry command are available, run **Telemetry (run last)** once with `OUTCOME=error` and the actual `ERROR_MESSAGE`/`FAILED_STEP`. Do not call ExitPlanMode. Resume at the failed step using Recovery routing.
+**Blocked outcome:** Stop the review and report `BLOCKED`, the missing path/work, actual attempts and what is needed to resume. Label complete chat-only output **not persisted**; it supplies no saved-review or completion credit. If startup values and a permitted telemetry command are available, run **Skill end (run last)** once with `OUTCOME=error` and the actual `ERROR_MESSAGE`/`FAILED_STEP`. Do not call ExitPlanMode. Resume at the failed step using Recovery routing.
 
-**Report-back outcome:** The caller forbids the report file or required Review Log. Present Required outputs steps 1 and 4 as **not persisted**; skip navigation, Read-back, the EXIT PLAN MODE GATE and ExitPlanMode. Run permitted **Telemetry (run last)** with `OUTCOME=success`. Report `DONE` and `PERSISTED: no`; the last line is `PERSIST: ` plus the filled `gstack-review-log` command for the caller to run. No saved-review credit until then.
+**Report-back outcome:** The caller forbids the report file or required Review Log. Present Required outputs steps 1 and 4 as **not persisted**; skip navigation, Read-back, the EXIT PLAN MODE GATE and ExitPlanMode. Run permitted **Skill end (run last)** with `OUTCOME=success`. Report `DONE` and `PERSISTED: no`; the last line is `PERSIST: ` plus the filled `gstack-review-log` command for the caller to run. No saved-review credit until then.
 
 ## Section self-check (before you finish)
 
@@ -185,7 +185,7 @@ and use Recovery routing above. Preserve verified work.
 
 {{EXIT_PLAN_MODE_GATE}}
 
-After the gate passes: **Telemetry (run last)** once with `OUTCOME=success`, then cache refresh. Make no further working-plan or approval changes between verification and exit.
+After the gate passes: **Skill end (run last)** once with `OUTCOME=success`, then cache refresh. Make no further working-plan or approval changes between verification and exit.
 
 {{BRAIN_CACHE_REFRESH}}
 

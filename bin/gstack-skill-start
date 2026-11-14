@@ -229,8 +229,9 @@ fi
 printf 'FIRST_TASK: %s\n' "$_FIRST_TASK" | _sanitize
 _LAKE_SEEN=$([ -f "$_GH/.completeness-intro-seen" ] && echo "yes" || echo "no")
 echo "LAKE_INTRO: $_LAKE_SEEN"
-_TEL=$("$_BIN/gstack-config" get telemetry 2>/dev/null || true)
-_TEL_PROMPTED=$([ -f "$_GH/.telemetry-prompted" ] && echo "yes" || echo "no")
+# Fork (CHE-5564): telemetry is hard off and never prompted.
+_TEL=off
+_TEL_PROMPTED=yes
 _TEL_START=$(date +%s)
 # PID+epoch alone is guessable; a random suffix makes the block-binding token
 # unforgeable by content reflected into the same tool result. Falls back to
@@ -558,11 +559,20 @@ _emit_block() { echo "GSTACK_INSTRUCTION_BEGIN: $1 $_SESSION_ID"; cat; echo "GST
 # guard: the former is the gate's inverse, the latter is interactive-only.
 if [ "$_NO_HUMAN" != "yes" ]; then
 
-# Upgrade flow (gated: update-check emitted something above).
+# Upgrade (fork, CHE-5564): no question. A newer cheese-work/gstack version
+# installs silently when auto_upgrade is true (the fork default); a failed
+# upgrade stays silent and retries at the next session start.
 if [ -n "$_UPD" ]; then
-  _emit_block upgrade-flow <<EOI
-The update-check output above applies. If it shows \`UPGRADE_AVAILABLE <old> <new>\`: read \`$_ROOT_DIR/gstack-upgrade/SKILL.md\` and follow the "Inline upgrade flow" (auto-upgrade if configured, otherwise AskUserQuestion with 4 options, write snooze state if declined). If it shows \`JUST_UPGRADED <from> <to>\`: print "Running gstack v{to} (just updated!)". If \`SPAWNED_SESSION\` is true, skip feature discovery. After upgrade prompts, continue the workflow.
+  case "$_UPD" in
+    UPGRADE_AVAILABLE*)
+      [ "$("$_BIN/gstack-config" get auto_upgrade 2>/dev/null || true)" = "true" ] \
+        && "$_BIN/gstack-upgrade" >/dev/null 2>&1 || true ;;
+    JUST_UPGRADED*)
+      _emit_block upgrade-flow <<EOI
+The update-check output above shows \`JUST_UPGRADED <from> <to>\`: print "Running gstack v{to} (just updated!)". If \`SPAWNED_SESSION\` is true, skip feature discovery.
 EOI
+      ;;
+  esac
 fi
 # Feature discovery (one prompt per session, marker-gated). These are
 # machine-local UX acknowledgements, so keep them in GSTACK_HOME rather than
@@ -597,29 +607,8 @@ Say: "gstack follows the **Boil the Ocean** principle — complete coverage, min
 EOI
 fi
 
-# Telemetry opt-in (interactive; consent — the model acks after answering).
-if [ "$_TEL_PROMPTED" = "no" ] && [ "$_LAKE_SEEN" = "yes" ]; then
-  _emit_block telemetry-prompt <<EOI
-Ask telemetry once via AskUserQuestion:
-
-> Help gstack get better. Yes sends, per skill run: skill name, outcome, duration, gstack version, OS, a redacted error summary and a stable device ID. Never code, file paths, prompts, repo or branch names. Your repo and branch are also logged on this machine (analytics/skill-usage.jsonl) and stripped before upload; off logs nothing. Not covered by this answer: the update check asks GitHub for the latest version about hourly (\`gstack-config set update_check false\`), and outside reviews send code to Codex or Claude Code (\`gstack-config set codex_reviews disabled\`). Details: README "Privacy & Telemetry".
-
-Options:
-- A) Help gstack get better! (recommended)
-- B) No thanks
-
-If A: run \`$_BIN/gstack-config set telemetry community\`. If B, ask the follow-up:
-
-> Anonymous mode sends only aggregate usage, no unique ID.
-
-Options: A) Sure, anonymous is fine  B) No thanks, fully off
-If B→A: \`$_BIN/gstack-config set telemetry anonymous\`. If B→B: \`$_BIN/gstack-config set telemetry off\`.
-Always run: \`touch "$_GH/.telemetry-prompted"\`.
-EOI
-fi
-
 # Proactive-suggestions opt-in (interactive; a stored off answered it above).
-if [ "$_PROACTIVE_PROMPTED" = "no" ] && [ "$_TEL_PROMPTED" = "yes" ]; then
+if [ "$_PROACTIVE_PROMPTED" = "no" ] && [ "$_LAKE_SEEN" = "yes" ]; then
   _emit_block proactive-prompt <<EOI
 Ask once:
 

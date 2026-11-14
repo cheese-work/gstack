@@ -414,10 +414,10 @@ describe('gen-skill-docs', () => {
     expect(updateCheck, 'binary must read update_check config').toContain('get update_check');
     expect(updateCheck, 'binary must exit silently on update_check=false')
       .toMatch(/if \[ "\$_UC" = "false" \]; then\n\s*exit 0/);
-    // Gate half 2: the upgrade-flow instruction block emits only when the
+    // Gate half 2: the silent fork upgrade (CHE-5564) runs only when the
     // binary emitted something (empty when opted out, cached, or up to date).
-    expect(SKILL_START_SCRIPT, 'upgrade-flow must be gated on update-check output')
-      .toMatch(/if \[ -n "\$_UPD" \]; then\n\s*_emit_block upgrade-flow/);
+    expect(SKILL_START_SCRIPT, 'upgrade must be gated on update-check output')
+      .toMatch(/if \[ -n "\$_UPD" \]; then\n\s*case "\$_UPD" in/);
   });
 
   test('tier 2+ skills contain ELI10 simplification rules (AskUserQuestion format)', () => {
@@ -450,13 +450,12 @@ describe('gen-skill-docs', () => {
     expect(router).toContain('model or skill benchmarks → invoke `/benchmark-models`');
   });
 
-  test('telemetry producer lives in the scripts; render documents the analytics sink', () => {
-    // The skill-usage.jsonl producers moved into the scripts (Phase 1).
-    expect(SKILL_START_SCRIPT).toContain('analytics/skill-usage.jsonl');
-    expect(SKILL_END_SCRIPT).toContain('analytics/skill-usage.jsonl');
-    // The render still tells the model where telemetry lands.
-    const content = fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf-8');
-    expect(content).toContain('$GSTACK_STATE_ROOT/analytics/');
+  test('telemetry is hard off in the scripts (CHE-5564)', () => {
+    // Fork: the skill-usage.jsonl producer in skill-start stays behind a gate
+    // that is forced off; skill-end carries no analytics producer at all.
+    expect(SKILL_START_SCRIPT).toContain('_TEL=off');
+    expect(SKILL_END_SCRIPT).not.toContain('analytics/skill-usage.jsonl');
+    expect(SKILL_END_SCRIPT).not.toContain('gstack-telemetry-log');
   });
 
   test('plan-review generated preambles stay under the Option A budget', () => {
@@ -1522,7 +1521,7 @@ describe('make-pdf setup ordering', () => {
     const preambleIdx = content.indexOf('## Preamble (run first)');
     const setupIdx = content.indexOf('## MAKE-PDF SETUP');
     const planModeIdx = content.indexOf('## Plan Mode Safe Operations');
-    const telemetryIdx = content.indexOf('## Telemetry (run last)');
+    const telemetryIdx = content.indexOf('## Skill end (run last)');
     const workflowIdx = content.indexOf('# make-pdf: publication-quality PDFs from markdown');
 
     expect(preambleIdx).toBeGreaterThanOrEqual(0);
@@ -2154,7 +2153,7 @@ describe('INVOKE_SKILL resolver', () => {
 
   test('INVOKE_SKILL output includes default skip list', () => {
     expect(ceoContent).toContain('Preamble (run first)');
-    expect(ceoContent).toContain('Telemetry (run last)');
+    expect(ceoContent).toContain('Skill end (run last)');
     expect(ceoContent).toContain('AskUserQuestion Format');
   });
 
@@ -3134,11 +3133,9 @@ describe('Codex generation (--host codex)', () => {
     expect(content).toContain('[ -d "$GSTACK_ROOT/bin" ]||GSTACK_ROOT=${CODEX_HOME:-~/.codex}/skills/gstack');
     expect(content).toContain('"$GSTACK_ROOT/bin/gstack-skill-start"');
     expect(content).toContain('$GSTACK_BIN/gstack-question-preference');
-    // The upgrade-skill doc reference moved into the script's upgrade-flow
-    // block, resolved $0-relative ($_ROOT_DIR) — host-neutral by construction,
-    // so the Codex render no longer needs its own copy.
-    expect(SKILL_START_SCRIPT).toContain('$_ROOT_DIR/gstack-upgrade/SKILL.md');
-    expect(SKILL_START_SCRIPT).toContain('_ROOT_DIR=$(dirname "$_BIN")');
+    // The silent fork upgrade runs gstack-upgrade from the script's own bin
+    // dir ($_BIN) — host-neutral by construction, no per-host copy in the render.
+    expect(SKILL_START_SCRIPT).toContain('"$_BIN/gstack-upgrade"');
     expect(content).not.toContain('~/.codex/skills/gstack/bin/gstack-config get telemetry');
   });
 
@@ -4005,40 +4002,33 @@ describe('telemetry', () => {
     expect(SKILL_START_SCRIPT).toContain('_SESSION_ID=');
     expect(SKILL_START_SCRIPT).toContain('echo "TELEMETRY:');
     expect(SKILL_START_SCRIPT).toContain('echo "TEL_PROMPTED:');
-    expect(SKILL_START_SCRIPT).toMatch(/gstack-config" get telemetry/);
+    // Fork (CHE-5564): telemetry is forced off, never read from config.
+    expect(SKILL_START_SCRIPT).toContain('_TEL=off');
+    expect(SKILL_START_SCRIPT).not.toMatch(/gstack-config" get telemetry/);
     // The render must tell the model to carry SESSION_ID/TEL_START to skill end.
     const content = fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf-8');
     expect(content).toContain('SESSION_ID');
     expect(content).toContain('TEL_START');
   });
 
-  test('telemetry opt-in prompt lives in gstack-skill-start (marker-gated emit)', () => {
-    // Token-reduction Phase 2: the one-time consent prompt left the renders
-    // (absence pinned by test/onboarding-moved-literals.test.ts); the script
-    // gates it on the marker files and emits it as a GSTACK_INSTRUCTION block
-    // with all three config-set outcomes and the ack INSIDE the block.
-    expect(SKILL_START_SCRIPT).toContain(
-      'if [ "$_TEL_PROMPTED" = "no" ] && [ "$_LAKE_SEEN" = "yes" ]; then',
-    );
-    expect(SKILL_START_SCRIPT).toContain('_emit_block telemetry-prompt');
-    expect(SKILL_START_SCRIPT).toContain('gstack-config set telemetry community');
-    expect(SKILL_START_SCRIPT).toContain('gstack-config set telemetry anonymous');
-    expect(SKILL_START_SCRIPT).toContain('gstack-config set telemetry off');
-    expect(SKILL_START_SCRIPT).toContain('touch "$_GH/.telemetry-prompted"');
+  test('no telemetry opt-in prompt exists in gstack-skill-start (CHE-5564)', () => {
+    expect(SKILL_START_SCRIPT).not.toContain('_emit_block telemetry-prompt');
+    expect(SKILL_START_SCRIPT).not.toContain('gstack-config set telemetry');
+    expect(SKILL_START_SCRIPT).not.toContain('.telemetry-prompted"');
   });
 
-  test('generated SKILL.md contains telemetry epilogue (one gstack-skill-end call)', () => {
+  test('generated SKILL.md contains the skill-end epilogue (one gstack-skill-end call, no telemetry)', () => {
     const content = fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Telemetry (run last)');
+    expect(content).toContain('Skill end (run last)');
     expect(content).toContain('gstack-skill-end --skill "gstack" --outcome OUTCOME');
     expect(content).toContain('--tel-start "TEL_START"');
     expect(content).toContain('PLAN MODE EXCEPTION');
-    // The duration math + remote-log dispatch moved into gstack-skill-end.
+    expect(content).not.toContain('Telemetry (run last)');
     expect(SKILL_END_SCRIPT).toContain('_TEL_END');
     expect(SKILL_END_SCRIPT).toContain('_TEL_DUR');
     expect(SKILL_END_SCRIPT).toContain('SKILL_NAME');
     expect(SKILL_END_SCRIPT).toContain('OUTCOME');
-    expect(SKILL_END_SCRIPT).toContain('gstack-telemetry-log');
+    expect(SKILL_END_SCRIPT).not.toContain('gstack-telemetry-log');
   });
 
   test('pending marker handling lives in the scripts', () => {
@@ -4055,7 +4045,7 @@ describe('telemetry', () => {
       const skillPath = path.join(ROOT, skill, 'SKILL.md');
       if (fs.existsSync(skillPath)) {
         const content = fs.readFileSync(skillPath, 'utf-8');
-        expect(content).toContain('Telemetry (run last)');
+        expect(content).toContain('Skill end (run last)');
         expect(content).toContain(`gstack-skill-end --skill "${skill}"`);
         expect(content).toContain('--tel-start "TEL_START"');
       }
@@ -4887,7 +4877,7 @@ describe('EXIT PLAN MODE GATE placement', () => {
         expect(gate).toBeGreaterThan(headings.indexOf('## Section self-check (before you finish)'));
         expect(headings.slice(gate)).toEqual(['## EXIT PLAN MODE GATE (BLOCKING)', '## Brain Cache Background Refresh']);
         const tail = md.slice(md.indexOf('## EXIT PLAN MODE GATE (BLOCKING)'));
-        const telemetry = tail.indexOf('**Telemetry (run last)**');
+        const telemetry = tail.indexOf('**Skill end (run last)**');
         expect(telemetry).toBeGreaterThan(0);
         const cache = tail.indexOf('## Brain Cache Background Refresh');
         if (skill === 'plan-ceo-review') expect(telemetry).toBeGreaterThan(cache);
@@ -4896,7 +4886,7 @@ describe('EXIT PLAN MODE GATE placement', () => {
         const finalHandoff = tail.slice(tail.indexOf('## Brain Cache Background Refresh'));
         expect(finalHandoff).toContain(skill === 'plan-ceo-review' ? 'Call ExitPlanMode where required or return to the caller' : 'After success telemetry and cache dispatch, call ExitPlanMode');
         if (skill === 'plan-ceo-review') {
-          expect(finalHandoff.indexOf('Call ExitPlanMode')).toBeGreaterThan(finalHandoff.indexOf('**Telemetry (run last)**'));
+          expect(finalHandoff.indexOf('Call ExitPlanMode')).toBeGreaterThan(finalHandoff.indexOf('**Skill end (run last)**'));
           expect(finalHandoff).toContain('handoff starts a separate workflow');
         }
         if (skill === 'plan-eng-review') {
