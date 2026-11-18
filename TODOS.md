@@ -2,6 +2,10 @@
 
 ## NEXT PRIORITY
 
+### P1: /office-hours parity pin after the resource move (filed 2026-11-17, GST-3024)
+
+- **Set the office-hours parity ratio in `test/helpers/carve-guards.ts` to the measured value.** The resource move (#4463) freed about 8.6 KB but left the pin at 1.1993. The content change that follows it sets the measured ratio with its reason; if that change slips, lower the pin on its own (a pin may go down freely). Deferred from plan: handoffs/office-hours-2026-11-17/plan.md (GStack Minder drive). **Effort:** S. **Priority:** P1.
+
 ### P3: `/plan-eng-review` return follow-up (filed 2026-11-15, GST-2726)
 
 - **Decide whether `plan-eng-multi-finding-batching` rejoins the weekly lane.** The cut of the standalone skill (GST-1698) took it out through `PERIODIC_CI_EXCLUDE`, because /autoplan Phase 3 auto-decides findings. The standalone `/plan-eng-review` is back (GST-2726) and asks one question per eng finding again, so the case reaches a shipped entry. Running it weekly is paid spend, so the call belongs to the measurement plan in GST-1966. The standalone paid cases deleted with the cut (`plan-eng-plan-mode`, `plan-eng-finding-floor`, `plan-eng-review-artifact-full`) are not restored either. **Effort:** S. **Priority:** P3.
@@ -46,7 +50,7 @@
 
 ### P2/P3: pregate head-policy follow-ups (filed 2026-10-31, from the GST-419/GST-420 /ship review)
 - **`finish` fallback drops head-policy lanes (P2)** — `lib/ship-release.ts` reruns pregate on the stamped tree under the base policy, so after a version bump a lane the branch added under `--policy-from head` is gone and `finish` reports `PREGATE: fail (rerun on the stamped tree)`. GSTA-194 owns that file and has the note. **Effort:** S. **Priority:** P2.
-- **The 3600 s preflight and `finish` wrapper deadline (P3)** — it caps the whole pregate run, so several runners that each fit `timeout_s` can still be cut off together. Derive the wrapper deadline from `timeout_s` and the lane count, or document the cap. **Effort:** S. **Priority:** P3.
+- **The 3600 s `finish` wrapper deadline (P3)** — it caps the whole pregate rerun, so several runners that each fit `timeout_s` can still be cut off together. Derive the wrapper deadline from `timeout_s` and the lane count, or document the cap. Preflight's half is done: `gstack-ship-preflight --step-timeout <s>` sets that budget and a stop prints `PREGATE: time limit hit` (#4429). **Effort:** S. **Priority:** P3.
 - **A bootstrap head policy can still certify itself without `--remote` (P3)** — with no trusted policy, the head file may set `remote_gate: null`, or produce an obligation that `gstack-pregate clear --receipt` accepts from the branch's own gate. Decide what a bootstrap `pregate.json` may certify, then enforce it in `verify` from the recorded policy label instead of per entry point. The `--remote` refusal also prints the generic `PREGATE_HEAD_POLICY_LOOSENS` fix line, which does not apply when there is no trusted policy. **Effort:** S. **Priority:** P3.
 
 ### P3: `/codex --effort` follow-ups (filed 2026-10-11, from the #3146 autoplan review)

@@ -378,6 +378,15 @@ gstack_result_anchor() {
     APPROVAL_RECORD_UNAVAILABLE) printf '%s' 'approval-record-unavailable' ;;
     APPROVAL_RECORD_WRITE_FAILED) printf '%s' 'approval-record-write-failed' ;;
     APPROVAL_IMPORT_UNANSWERED) printf '%s' 'approval-import-unanswered' ;;
+    OWNER_ANSWERS_NO_DRIVE) printf '%s' 'owner-answers-no-drive' ;;
+    OWNER_ANSWERS_AMBIGUOUS) printf '%s' 'owner-answers-ambiguous' ;;
+    OWNER_ANSWERS_INVALID) printf '%s' 'owner-answers-invalid' ;;
+    OWNER_ANSWERS_SECRET) printf '%s' 'owner-answers-secret' ;;
+    OWNER_ANSWERS_WRITE_FAILED) printf '%s' 'owner-answers-write-failed' ;;
+    OWNER_ANSWERS_NOT_FOUND) printf '%s' 'owner-answers-not-found' ;;
+    OWNER_ANSWERS_CONFLICT) printf '%s' 'owner-answers-conflict' ;;
+    OWNER_ANSWERS_SELF_VERIFY) printf '%s' 'owner-answers-self-verify' ;;
+    OWNER_ANSWERS_NOT_TAKEABLE) printf '%s' 'owner-answers-not-takeable' ;;
     CAPTAIN_BRIEF_INCOMPLETE) printf '%s' 'captain-brief-incomplete' ;;
     PR_SHOTS_INPUT_NOT_FOUND) printf '%s' 'pr-shots-input-not-found' ;;
     PR_SHOTS_INPUT_REFUSED) printf '%s' 'pr-shots-input-refused' ;;
@@ -401,6 +410,12 @@ gstack_result_anchor() {
     ARCHIVE_GH_READ_FAILED) printf '%s' 'archive-gh-read-failed' ;;
     ARCHIVE_PR_STATE_UNKNOWN) printf '%s' 'archive-pr-state-unknown' ;;
     ARCHIVE_POLICY_UNREADABLE) printf '%s' 'archive-policy-unreadable' ;;
+    FIRST_USE_PLAN_UNREADY) printf '%s' 'first-use-plan-unready' ;;
+    FIRST_USE_PLAY_SPEC_INCOMPLETE) printf '%s' 'first-use-play-spec-incomplete' ;;
+    FIRST_USE_SAME_FAMILY) printf '%s' 'first-use-same-family' ;;
+    FIRST_USE_NO_PRIVATE_DRIVE) printf '%s' 'first-use-no-private-drive' ;;
+    FIRST_USE_RECORD_INVALID) printf '%s' 'first-use-record-invalid' ;;
+    FIRST_USE_REFUSED) printf '%s' 'first-use-refused' ;;
     BUDGET_CAP_REACHED) printf '%s' 'budget-cap-reached' ;;
     BUDGET_READING_MISSING) printf '%s' 'budget-reading-missing' ;;
     METER_SCOPE_PARENT) printf '%s' 'meter-scope-parent' ;;
@@ -413,6 +428,9 @@ gstack_result_anchor() {
     PREREG_DIAGNOSTIC_UNTESTED) printf '%s' 'prereg-diagnostic-untested' ;;
     PREREG_NO_GSTACK_ARM) printf '%s' 'prereg-no-gstack-arm' ;;
     EVAL_REPORT_NO_GSTACK_ROW) printf '%s' 'eval-report-no-gstack-row' ;;
+    EVAL_JUDGE_UNCHECKED) printf '%s' 'eval-judge-unchecked' ;;
+    EVAL_REPORT_UNPLANTED_ZERO) printf '%s' 'eval-report-unplanted-zero' ;;
+    EVAL_REPORT_NO_ANSWER_ONLY) printf '%s' 'eval-report-no-answer-only' ;;
     EVAL_ARM_DUPLICATE) printf '%s' 'eval-arm-duplicate' ;;
     OFFICE_HOURS_PROBE_REFUSED) printf '%s' 'office-hours-probe-refused' ;;
     TASKS_SUPERSEDE_REFUSED) printf '%s' 'tasks-supersede-refused' ;;
@@ -437,6 +455,7 @@ gstack_result_anchor() {
     PLAIN_TITLE_REFUSED) printf '%s' 'plain-title-refused' ;;
     PLAIN_BRANCH_REFUSED) printf '%s' 'plain-branch-refused' ;;
     PLAIN_OPENING_REFUSED) printf '%s' 'plain-opening-refused' ;;
+    PLAIN_BODY_REFUSED) printf '%s' 'plain-body-refused' ;;
     PLAIN_CHANGELOG_REFUSED) printf '%s' 'plain-changelog-refused' ;;
     PLAIN_COMMIT_REFUSED) printf '%s' 'plain-commit-refused' ;;
     PLAIN_POLICY_INVALID) printf '%s' 'plain-policy-invalid' ;;
