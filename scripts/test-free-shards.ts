@@ -186,8 +186,21 @@ export const DEFAULT_WALL_TIMEOUT_MS = 6 * 60_000;
  * timed-out kill of a healthy run. Explicit --wall-timeout disables scaling.
  */
 export const PER_FILE_WALL_MS = 5_000;
+/**
+ * GSTACK_FREE_WALL_SCALE multiplies every computed wall (default 1). The duration
+ * seed is recorded on fast CI; a shared host under agent load runs the suite
+ * 2.5-2.9x slower (CHE-5381: a 1464 s wall against 1219-1393 s observed). A
+ * number of at least 1 only: scaling can loosen a wall, never tighten it.
+ */
+export function wallScale(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.GSTACK_FREE_WALL_SCALE;
+  if (raw === undefined || raw === '') return 1;
+  const scale = Number(raw.trim());
+  if (!Number.isFinite(scale) || scale < 1) throw new Error(`GSTACK_FREE_WALL_SCALE must be a number of at least 1, got: ${raw}`);
+  return scale;
+}
 export function wallTimeoutForShard(fileCount: number, baseMs = DEFAULT_WALL_TIMEOUT_MS): number {
-  return Math.max(baseMs, fileCount * PER_FILE_WALL_MS);
+  return Math.ceil(Math.max(baseMs, fileCount * PER_FILE_WALL_MS) * wallScale());
 }
 
 /**
@@ -203,7 +216,7 @@ export function wallTimeoutForPackedShard(predictedMs: number, baseMs = DEFAULT_
   // at its 725s predicted-x3 wall while genuinely still progressing). The
   // packed wall may therefore be LOOSER than the count heuristic, never
   // tighter — it keeps the per-file floor the runner has always guaranteed.
-  return Math.max(baseMs, Math.ceil(predictedMs * 3), fileCount * PER_FILE_WALL_MS);
+  return Math.ceil(Math.max(baseMs, Math.ceil(predictedMs * 3), fileCount * PER_FILE_WALL_MS) * wallScale());
 }
 /** The flaky-retry pass re-runs at most this many failing files, once, serially, in the same CI step. */
 export const FLAKY_RETRY_CAP = 5;

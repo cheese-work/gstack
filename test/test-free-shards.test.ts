@@ -1095,6 +1095,28 @@ describe('test-free-shards: duration-aware packing (full-suite LPT)', () => {
     expect(wallTimeoutForPackedShard(1_000)).toBe(WALL_BASE_MS);
   });
 
+  test('GSTACK_FREE_WALL_SCALE stretches every wall for a loaded shared host (CHE-5381)', () => {
+    // X99 runs the suite 2.5-2.9x slower than the CI seed under agent load,
+    // so predicted x3 left a 1464 s wall vs 1219-1393 s observed.
+    const prev = process.env.GSTACK_FREE_WALL_SCALE;
+    try {
+      delete process.env.GSTACK_FREE_WALL_SCALE;
+      expect(wallTimeoutForPackedShard(488_000, WALL_BASE_MS, 103)).toBe(1_464_000);
+      process.env.GSTACK_FREE_WALL_SCALE = '2';
+      expect(wallTimeoutForPackedShard(488_000, WALL_BASE_MS, 103)).toBe(2_928_000);
+      expect(wallTimeoutForShard(103)).toBe(2 * Math.max(WALL_BASE_MS, 103 * 5_000));
+      process.env.GSTACK_FREE_WALL_SCALE = '1.5';
+      expect(wallTimeoutForPackedShard(488_000, WALL_BASE_MS, 103)).toBe(2_196_000);
+      for (const bad of ['0', '-1', 'abc', '0.5']) {
+        process.env.GSTACK_FREE_WALL_SCALE = bad;
+        expect(() => wallTimeoutForPackedShard(1_000)).toThrow(/GSTACK_FREE_WALL_SCALE/);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.GSTACK_FREE_WALL_SCALE;
+      else process.env.GSTACK_FREE_WALL_SCALE = prev;
+    }
+  });
+
   test('packed walls never undercut the per-file floor (predictions do not transfer across machines)', () => {
     // The duration seed is recorded on fast CI; a syscall-supervised sandbox
     // replays the same files 2-4x slower. A 253-file shard predicted at ~242s
