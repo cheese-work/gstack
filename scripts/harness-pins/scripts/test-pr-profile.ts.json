@@ -1,1 +1,1 @@
-{"blob":"51f07a2710492d30aa86cc31079e4b277bf85eaa","since":6,"nonBehavioral":"fork-only: one FREE_ONLY_PR_FILES entry classifying the fork's free-suite workflow; no eval case or verdict reads it"}
+{"blob":"27142f6c634a51f91e11c122c9b5d23f4398b21f","since":6,"nonBehavioral":"adds crew/scripts/release-notes.ts to the free-only list beside release-cut.ts (upstream), plus the fork-only FREE_ONLY_PR_FILES entry classifying the fork's free-suite workflow; no eval case or verdict reads either"}

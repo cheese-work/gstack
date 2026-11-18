@@ -103,7 +103,7 @@ the byte-pinned `/ship` renders in `test/fixtures/golden/`).
 | `sealed` | sealed or eval output that must never reach a public destination; read by the pre-push hook and `gstack-pregate sealed` (see [sealed output](#sealed)) |
 | `price_file` | repo-relative path of the paid gate's call-plan data file (`GSTACK_EVAL_CALLS v1`); `gstack-eval-plan price-gate` prices from it and never executes anything ([docs/eval-calls.md](eval-calls.md)) |
 | `stall_timeout_s` | seconds a test command may print nothing while using under a tenth of one CPU before its process group is killed and the check is `incomplete` (`PREGATE_STALLED`); default 300, `0` disables; `--stall-timeout` overrides; the `--remote` gate is exempt (see [supervision](#supervision)) |
-| `timeout_s` | seconds each runner process may take (the unit-file group, each serial file, each guard without its own `timeout_s`, and the remote gate's deadline) when `--timeout` is not passed; 1 to 3600, default 600. `gstack-ship-preflight` forwards its own `--timeout`; without it, and in the `finish` fallback, this is how a repo with long lanes sets theirs |
+| `timeout_s` | seconds each runner process may take (the unit-file group, each serial file, each guard without its own `timeout_s`, and the remote gate's deadline) when `--timeout` is not passed; 1 to 3600, default 600. `gstack-ship-preflight` forwards its own `--timeout`; without it, and in the `finish` fallback, this is how a repo with long lanes sets theirs. The whole pregate under `gstack-ship-preflight` has a separate budget, `--step-timeout <s>` (1 to 86400, default 3600): a pregate stopped there prints `PREGATE: time limit hit` and a STOP naming the way out, push and let CI's full run at the tree carry the tests ([CI carry](#ci-carry)), or a larger `--step-timeout` |
 | `remote_gate` | the repo's remote test gate command; under 8 cores the local test tier becomes a `requires-remote` obligation naming it, and `--remote` runs it (see [remote gate](#remote-gate)) |
 | `run_profiles` | a map from each profile name to `{ workflow, events, jobs, artifact, max_age_hours?, os?, skippable? }`: the GitHub Actions runs `clear --run` verifies as evidence on the identical tree; a profile named after a lane (`free-tests.yml/macos-named-regressions`) clears that lane (see [run evidence](#run-evidence)). `--from-run` and the reuse job verify runs against them too ([from-run](#from-run), [CI reuse](#ci-reuse)) |
 | `remote_gate_runs` | `{ profiles, inventory, skipped? }`: the run profiles that together clear `pregate.json/remote_gate`, the command that prints the remote gate's test files, one per line, which their runs must cover, and an optional command that prints which selected files the gate itself never runs (see [run evidence](#run-evidence)) |
@@ -353,6 +353,15 @@ Two stages with separate clocks, both printed:
   modified file whose only test the branch deleted still has no lane, and a
   remaining test that reads a deleted file or directory is selected. /review
   lists a deleted test as a gate edit (RH-1) either way.
+  A JS/TS file's `paths` aliases and `baseUrl` come from the nearest
+  tsconfig.json (else jsconfig.json) above it that declares `paths` or
+  `baseUrl`, itself or through a relative `extends` chain inside the
+  repository (up to four hops), joined relative to the config that declares
+  them. A nested config that declares neither defers to the next one up, and
+  the repository root's config governs the rest, so `@/x` in
+  `apps/mobile/src/a.test.ts` resolves through `apps/mobile/tsconfig.json`.
+  A package-name `extends` or one that leaves the repository is not followed
+  and is named in the no-lane explanation.
   An extensionless JS/TS import (relative, a tsconfig/jsconfig `paths` alias or
   `baseUrl`) tries the exact path, then `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
   `.cjs`, `.mts`, `.cts`, then `index.ts`, `index.tsx`, `index.js`, `index.jsx`
@@ -428,7 +437,11 @@ Two stages with separate clocks, both printed:
   `workflow.yml/job`, unless `local` names that lane. `--explain` prints each test's provenance and every
   uncertain mapping (a planner-computed matrix without a `selection` manifest
   selects conservatively). Test files matching `serial_patterns` (default
-  `**/*.serial.test.*`) run one process per file after the unit files. The
+  `**/*.serial.test.*`) run one process per file after the unit files. A unit
+  group whose quoted file list would pass the system's argument limits (Linux
+  caps one argument at 128 KiB) runs as several runner processes in sequence,
+  each under about 96 KB of file arguments (24 KB on Windows), read back as one run: counts add up,
+  any failing chunk fails the lane, and they share the group's one `--timeout`. The
   runner and every guard run with the verified launch Bun first on PATH: the
   first of `$BUN_INSTALL/bin` and `~/.bun/bin` whose Bun satisfies gstack's and
   the project's `engines.bun` (the row prints `runtime: bun <v> from <dir>`),
@@ -559,7 +572,11 @@ test_backend` is not `local`, the lanes check runs nothing locally: it records
 the selected local files as a `requires-remote` obligation with the command to
 run, `pregate.json/remote_gate` (the declared command) or
 `test_backend/<backend>` (gstack's `scripts/ubicloud/ubi-runner.sh run --src
-<repo> -- '<runner> <files>'`). Without either, the tier runs locally under
+<repo> --setup <file> -- '<runner>'`, where the setup script, kept under
+`<state root>/projects/<slug>/pregate/remote-files/` and named by its content,
+writes the selected files to `~/.pregate-files.txt` on the VM and the runner
+reads them from there; the list never goes on the command line, which reaches
+the VM as one argument, see [arg-limit](troubleshooting.md#arg-limit)). Without either, the tier runs locally under
 the supervision above. Close the obligation one of four ways:
 
 - by default, when the base declares `remote_gate_runs`, let CI clear it: the
@@ -996,7 +1013,7 @@ conclusion. On main the free tier's Windows smoke lane is
 Two narrower Windows lanes are owed only when a branch selects their own test
 files: `free-tests.yml/cso-windows-launcher` (cleared by a `free-tests.yml`
 run) and `windows-setup-e2e.yml/windows-setup` (cleared by a
-`windows-setup-e2e.yml` run). The six-shard
+`windows-setup-e2e.yml` run). The eight-shard
 `windows-free-tests.yml/windows-free-shard` job is `manual`, so it is never an
 obligation. A branch cut before
 `windows-smoke.yml` landed still owes `windows-free-tests.yml/windows-free-shard`
@@ -1067,6 +1084,17 @@ it accepts a run only when all of these hold:
   running run on HEAD, within `max_age_hours`, and a `tree.json` naming HEAD's
   tree. A `pull_request` run counts only when the pull request already
   contained its base.
+- <a id="same-tree-commits"></a>HEAD's runs include those of its newest
+  ancestors (up to 20 back) whose tree `git rev-parse <sha>^{tree}` reads as
+  HEAD's own, so a base merge that changed no file keeps the green run of the
+  commit before it (GST-3019). Git decides which commits those are; a run's
+  own `tree.json` never does. Every rule above still applies to that run, and
+  a newer red or running run on HEAD or on any of those commits vetoes it.
+  `gstack-ci-carry find` then prints `CI_CARRY_FROM: run <id>/<attempt> at
+  commit <sha>, not HEAD <sha>; git rev-parse reads the same tree <tree> for
+  both`, a Step 5 lane reads `LANE: <label> carried run=… from=<sha> (same
+  tree as HEAD)`, and the receipt's `heads=` names that commit.
+  `gstack-ci-carry wait` watches those commits' runs too.
 - Every run executed tests, and with an inventory command, the runs'
   `tree.json` files cover every file it prints, none of them a file whose every
   test skipped there (`skipped_files`). A lane mapped by `jobs`
@@ -1287,7 +1315,10 @@ with every character outside `A-Za-z0-9._-` turned into `_` (`pnpm lint` is
 `pnpm_lint`, `db:test` is `db_test`), and `run`, `record-ci` and `check` all
 use that one spelling, so `check --label 'pnpm lint'` finds the row; `ci_carried`
 and `CI_CARRIED:` name the stored spelling. A mapped lane that cannot
-carry prints `CI_CARRY: none label=<label> (<reason>)` and runs here. Every
+carry prints `CI_CARRY: none label=<label> (<reason>)` and runs here, except
+under `gstack-ship-preflight --tests-only`, which stops before any lane runs
+with [`SHIP_LANE_NOT_CARRIED`](troubleshooting.md#ship-lane-not-carried) unless
+it is given `--run-uncarried-here`. Every
 other lane runs through `gstack-evidence run --reuse`: the newest row for its
 label, command and working tree is reused when it passed with a counted run
 under the same runtime (bun and node versions, OS, architecture, runner image)
@@ -1833,6 +1864,29 @@ those, each with its scope and its reason:
   Any other call's literal (`make_password("orange_monkey_pass")`), a later
   argument or fallback (`os.getenv("SECRET_KEY", "orange_monkey_pass")`) and a
   kebab passphrase still report.
+- Three more code shapes are names, not credentials (GST-3004): a TypeScript
+  type with spaced generic arguments
+  (`session: Awaited<ReturnType<typeof launch>>;`), a Python keyword
+  argument that reads a CONSTANT_CASE setting
+  (`aws_secret_access_key=settings.S3_SECRET_KEY,`, #4289), and a quoted
+  camelCase dotted field path of three word segments
+  (`"form.section.fieldName"`; an all-lowercase one still reports). Each is
+  read from the value, never from the key's name or the file's path, and a
+  secret in the same position, a literal after it on the line, or the same text
+  in a config file still reports.
+- Known limits, still reported, allowlist them by value: a JS/TS template key
+  built from `${…}` slots (#4287), an array of names in source code
+  (`"get_token": [load_auth, "authOperations"]`), and a generic type with
+  string-literal arguments (`Pick<Session, "id" | "forkedFrom">`). Exempting
+  them needed an entropy test on their text alone, which let random hex and
+  encoded literals through.
+- Two misses are closed (#4289): the string pieces of a `+` chain are joined
+  and checked (`KEY = "form.x" + "<secret>"`), and a secret-named assignment
+  right after `#`, `//`, `/*` or `<!--` reports in a trailing or
+  whole-line comment unless its value is prose or key-naming text
+  (letters-only words joined by `_ . - | : / #`). An array whose first
+  element is a quoted secret (`"get_token": ["<secret>"]`) still reports
+  only through a provider rule such as `stripe.secret`.
 
 The `secrets` row says `N allowlisted (<ids>)` and lists each allowlisted
 finding with the entry (`allowlisted env.kv (evals/receipts/t1.json, added line
@@ -1858,6 +1912,7 @@ failure the branch caused carries `cause: "diff"` (`PREGATE_LANE_FAILED`,
 | Kind | Evidence |
 |---|---|
 | `missing-binary` | exit 127, `command not found`, a spawn `ENOENT`, a runner tool `not on PATH` (dart, flutter, cargo, a package manager, `python3`, or `pytest` when python3 cannot import it), Playwright's browsers not installed |
+| `arg-limit` | `E2BIG`, `Argument list too long`: a command line or environment over the system's limit. gstack splits a lane's file list to stay under it, so this is a gstack bug to report ([troubleshooting](troubleshooting.md#arg-limit)) |
 | `network` | `ENOTFOUND`, `ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`, `Could not resolve host`, `fetch failed`, a TLS handshake or certificate failure |
 | `quota` | `quota`, `429 Too Many Requests`, `rate limit`, `insufficient_quota` (a vCPU quota on the remote backend) |
 | `disk` | `ENOSPC`, `No space left on device`, `EDQUOT` |
@@ -2269,6 +2324,9 @@ cross-repo `owner/repo#N` are `Refs`. A parenthesised named reference,
 token that is not a closure, reference, filler or version word, is a
 cross-repo `Refs name#N`, never a same-repo Refs line or a promotion
 candidate; `(see #12)`, `(closing #12)` and `(#301)` stay bare refs.
+Several in one parenthesis, `(founderstar #837, harness-evals #393)`, are each
+their own name's reference. `owner/repo#N` naming this repository is its own
+issue, so a `Fixes garrytan/gstack#N` trailer closes it.
 Same-repo references are printed as
 promotion candidates (`reference #N ← <commit line> (promote: fix #N)` on
 stderr, `candidates` in `--json`): the owner's `fix #N` reply reruns with
