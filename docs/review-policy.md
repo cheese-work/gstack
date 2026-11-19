@@ -187,26 +187,55 @@ caught on another crew's PRs.
    full passes only, by design (`lib/review-depth.ts` `prCapped`): earlier runs'
    fix-checks and scoped passes show in `pr_rounds=` but don't count against it,
    because each run's own fix round is the in-run table's call. A full pass past two
-   stops with `PR_ROUND_CAP` and prints the exact `gstack-approvals
-   round-grant` command; a below-floor fix at the cap finishes with its notes
-   listed. The stop is the lane's or Captain's call, never an owner ask
+   stops with `PR_ROUND_CAP` and says how to record the stop and its grant
+   (item 6); a below-floor fix at the cap finishes with its notes listed. The stop is the lane's or Captain's call, never an owner ask
    ([troubleshooting](troubleshooting.md#pr-round-cap)).
 5. **Read-only final review.** A PR that already had two full rounds and whose
    own code changed since still gets one full review of its final head. It has
    no fix round: below-floor findings ship as notes, and a blocker (open or
    fixed) or a gate-class edit stops with `PR_ROUND_CAP` for the lane's Captain
-   to decide: ship with the note, or park. A round grant recorded after the
-   read-only review doesn't buy a fix round, because that review already spent
-   the round the grant would add. The count does not reopen.
-6. **Round grant.** `gstack-approvals round-grant --pr <n> --head <sha> --kind
-   extra-round --reason <why> --by <lane or Captain>` records one grant for one
-   head: one round past the cap, with its fix round, instead of the read-only
-   review. Step 1's `PR_REVIEW_FLAGS:` then adds `--round-grant <id>`, which
-   raises that run's cap by one round, and the plan refuses a grant for another
-   head or PR. The plan keeps the grant after the fix round's commits move HEAD
-   past it. gstack never grants itself a round: `--by gstack` and a grant
-   from inside an open `/ship` run are refused, and `add` refuses the scope.
-   The receipt lists grants under `review_round_grants`.
+   to decide: ship with the note, park, or buy that review's fix round with a
+   fix-check grant (item 6). The count does not reopen.
+6. **Round grants.** Two kinds, each recorded with `gstack-approvals round-grant
+   --pr <n> --head <sha> --reason <why> --by <lane or Captain>`, and each spent
+   by the one run that claims it.
+   - **`--kind fix-check`, after a stop** (GST-2968). When a review stops,
+     `/ship` runs `gstack-ship-receipt stop`, which writes a stop record into
+     the PR body's runs block: the run, and the commit and tree the stopped review
+     read. It writes one only when that review finished, read one committed tree
+     from start to end on a clean checkout, and that commit is HEAD or under it
+     (`STOP_UNBOUND` otherwise). The grant names that stop's head, its run
+     (`--stop-run`) and the findings its fix round is for (`--findings`). It
+     buys the stopped review's fix round: one scoped fix-check of the PR's own
+     change since the stop's head (a base merge in between is not part of it), in
+     the same run or a new one on another machine, never a new full review.
+     Step 1's `PR_REVIEW_FLAGS:` adds `--round-grant <id> --stop <head>` and the
+     route is `fix-check`. It answers only the newest stop record, and nothing
+     once another run reviewed after that stop, HEAD no longer contains the stop's
+     head, or another run claimed it (`PR_REVIEW_GRANT: not applied (why)`).
+     A fix-check found nothing to read (an empty, reverted or base-only change)
+     plans no fix-check. The fix-check never earns another: a blocker there
+     stops with `PR_ROUND_CAP` again.
+   - **`--kind extra-round`, before review.** One round past the cap, with its fix
+     round, at a head no review has stopped at: instead of the read-only review.
+     Step 1's `PR_REVIEW_FLAGS:` adds `--round-grant <id>` when the grant names
+     HEAD, or a head HEAD only merges the base into with the PR's own added and
+     removed lines byte-identical and in the same places (preflight merges the base
+     first); the plan raises that run's cap by one round, keeps the round's fix
+     round, and keeps the grant after the fix round's commits move HEAD past it.
+     An extra-round grant never answers a stop.
+   A run whose flags name a grant runs `gstack-ship-receipt claim` before its
+   first dispatch, which writes a grant record into the runs block; a grant
+   another run claimed is refused (`GRANT_SPENT`), a voided run's claim still
+   spends it, and stop and grant records are never trimmed from the block.
+   gstack never grants itself a round: `--by` naming gstack (any name starting
+   with "gstack", so a Captain called GStack Minder writes "Captain GStack
+   Minder") and a grant from inside an open `/ship` run are refused, and `add`
+   refuses the scope. `--by` is otherwise the caller's own text, recorded and
+   not checked: a lane that records a grant (or a ruling) from another checkout
+   under its Captain's name can't be told apart from the Captain doing it, so the
+   Captain's check of the receipt's `review_round_grants` and the PR body's lines
+   is the control. The receipt lists grants under `review_round_grants`.
 
 <a id="transitions"></a>
 ### Transitions
@@ -429,7 +458,14 @@ rules are coarse on purpose and parse no import clause or call arguments;
 200,000-character hostile lines, its anchor followed by a long run of the
 characters it repeats included. `test/review-risk-redos.test.ts` (GST-898) holds every risk pattern, R51's `rm` and `rmSync` rules included, under 100 ms on 100,000-character hostile lines. An `rmSync(` or `rm(` call (`fs.rm`, `fs.promises.rm` or an imported `rm`) counts as security when `recursive: true` follows within 500 characters, whatever the arguments hold (a `path.join(...)` first argument or a `)` in a comment included) and also when a formatter split a new call across lines, which is read over the file's changed lines joined (GST-942; an edit to one line of an existing split call is read on its own); a call with more than 500 characters before the first `)` after it counts on its own. **data** is user data: a path naming pii, gdpr, ccpa, privacy,
 personal, account, customer, cookie, persistence, storage or database, or a line
-that drops a table or column, deletes rows or bulk-deletes records. Auth scope,
+that drops a table or column, deletes rows or bulk-deletes records. On `.swift`
+paths outside XCTest targets (a `Tests/` or `*Tests/` directory, or a
+`*Tests.swift` file), a privacy permission request (speech, microphone,
+HealthKit, calendars, location, camera, photos) is security, and a HealthKit,
+EventKit or Contacts read, an on-device file write or delete, a file protection
+class, an app group container, backup exclusion or a declared retention period is
+data; UserDefaults settings, SwiftUI views and file reads are neither, and a call
+split across lines is read over the file's changed lines joined (GST-3052). Auth scope,
 migrations and deleted code paths were already gate class. `RISK_RULES` hashes
 the patterns and `DEPTH_RULES` includes it.
 
@@ -766,6 +802,7 @@ puts in the receipt:
 | `review_loop.passes` | full review passes this ship ran (1 or 2; up to 3 under `review_scope: diff-plus-blocking` or `all`) |
 | `review_loop.blocking_found` | every blocker found (GST-951): the rows' blocking findings (classified, or an unclassified CRITICAL), plus each ledger CRITICAL (as collected or judged) that no row finding from the same reviewer at the same path:line accounts for (each row finding pairs with one per ledger), so an adversarial, outside-voice or not-yet-classified blocker counts and one whose newest classification is below the floor does not. An unreadable ledger, merged file or judged set, or a judged set changed since `judge`, is `REVIEW_SCOPE_LEDGER`, never a count |
 | `review_loop.unrecorded` | blockers found that no row gives a disposition (fixed, deferred, noted, skipped, a gate answer); absent when 0 |
+| `review_loop.open` | blockers a row still holds as `open` at its newest action, gate findings aside (GST-3075), each its ledger id or fingerprint (or `{ id, fingerprint }`); Step 11's `adversarial-review` row counts here like a pass's row but is never a pass or a round. Only a later row's action clears one, and while any is left with no owner ruling, `gstack-ship-receipt write` refuses with [`RECEIPT_BLOCKER_OPEN`](troubleshooting.md#receipt-blocker-open); absent when 0 |
 | `review_loop.unbound` | what could not bind (GST-1168), each printed as `REVIEW_SCOPE_UNBOUND: <what>: <why>`: a row with no start token and no readable time, a `pN` ledger with no review row of pass N (a fix-check ledger in a `pN` directory is not a pass ledger, GST-1775), a row finding's `ledger_id` no ledger collected, a `Review-Finding` trailer naming nothing; absent when 0 |
 | `review_loop.ledgers_read` | dispatch ledgers the count read; absent under `--no-ledger` |
 | `REVIEW_SCOPE_VOIDED:` (stderr, not a receipt field) | an abandoned pass (GBEV-3): a `pN` ledger never judged that no row names, replaced by a later `pM` ledger (M > N) that was judged or is named. Its findings are left out of every count above instead of counting as unbound and unrecorded. A fix-check ledger and the last pass are never voided |

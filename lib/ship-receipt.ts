@@ -6,7 +6,7 @@
  * computes the P7 adoption census over merged PRs (deduplicated by run and
  * thread id against an owner-maintained thread cohort).
  */
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from './spawn-sync';
 import { ARTIFACT_SCHEMAS, checkSchema, type ShipReceipt, type ValidationError } from './headless-artifacts';
 import { agentNotesOrBody, splitAgentNotes, withAgentNotes } from './agent-notes';
 import { approvalSummary } from './approval-citations';
@@ -16,6 +16,7 @@ import { matchesAny } from './ship-policy';
 import { ruledNoteText } from './ruled-notes';
 import { gateDispositionText } from './gate-dispositions';
 import { laneExceptionBodyLines } from './test-lane-exception';
+import { rerunMarker } from './run-evidence';
 import { stampFileKind, versionStampOnly } from './pregate/stamp-only';
 import { stampOnlyLine, type BranchSide } from './stamp-only';
 
@@ -132,7 +133,12 @@ export const RUNS_RE = /```gstack-receipt-runs[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]
  * carries), `carry` for any other hop. status: a /ship run that
  * started and wrote no receipt yet (`started`, its counters so far) or ended on an infrastructure failure (`voided`).
  */
-export type ReceiptRun = Pick<ShipReceipt, 'head' | 'version' | 'gstack_version' | 'run' | 'review_loop' | 'review_loop_exception'> & { depth?: string; carried_from?: string; carry_kind?: 'carry' | 'recheck'; status?: 'started' | 'voided' };
+export type ReceiptRun = Pick<ShipReceipt, 'head' | 'version' | 'gstack_version' | 'run' | 'review_loop' | 'review_loop_exception'> & { depth?: string; carried_from?: string; carry_kind?: 'carry' | 'recheck'; status?: 'started' | 'voided'; mark?: 'stop' | 'grant'; tree?: string; grant?: string };
+/** The runs block keeps the newest RECEIPT_RUNS_KEPT run entries and every stop or grant marker (lib/pr-review-history.ts), in order. */
+export function keptRuns(runs: readonly ReceiptRun[]): ReceiptRun[] {
+  const keep = new Set(runs.filter(r => !r.mark).slice(-RECEIPT_RUNS_KEPT));
+  return runs.filter(r => r.mark || keep.has(r));
+}
 export function receiptRuns(body: string): ReceiptRun[] {
   const m = RUNS_RE.exec(receiptSource(body));
   return m ? m[1]!.split('\n').flatMap(l => { try { const o = JSON.parse(l); return o && typeof o.head === 'string' ? [o as ReceiptRun] : []; } catch { return []; } }) : [];
@@ -163,7 +169,7 @@ export function placeReceipt(body: string, receipt: ShipReceipt): string {
   const prior = ex.receipt;
   const runs = receiptRuns(body).filter(r => !r.status || !!receipt.carry || receipt.run === undefined || r.run !== receipt.run);
   if (prior && typeof prior.head === 'string' && JSON.stringify(prior) !== JSON.stringify(receipt)) runs.push(receiptRun(prior));
-  const kept = runs.slice(-RECEIPT_RUNS_KEPT);
+  const kept = keptRuns(runs);
   const block = renderReceiptBlock(receipt) + (kept.length ? '\n```' + RUNS_FENCE + '\n' + kept.map(r => JSON.stringify(r)).join('\n') + '\n```\n' : '');
   if (ex.found && splitAgentNotes(body).notes === null) {
     const rest = body.replace(BLOCK_RE, '').replace(RUNS_RE, '').replace(/^\s+/, '');
@@ -207,7 +213,15 @@ export function receiptSummaryLine(r: ShipReceipt): string {
   if (loop) parts.push(`passes=${loop.passes} blocking_found=${loop.blocking_found} deferred=${loop.deferred}`
     + (loop.fix_checks ? ` fix_checks=${loop.fix_checks}` : '') + (loop.rounds !== undefined ? ` rounds=${loop.rounds}` : '') + (loop.dispatches ? ` dispatches=${Object.values(loop.dispatches).reduce((a, c) => a + c, 0)}` : ''));
   if (r.carry && typeof r.carry.from === 'string') parts.push(`carried_from=${r.carry.from.slice(0, 12)}`);
-  if (Array.isArray(r.ci_carried) && r.ci_carried.length) parts.push(`ci_carried=${r.ci_carried.map(c => `${c.lane}:${c.run}/${c.attempt}`).join(',')}`);
+  if (Array.isArray(r.ci_carried) && r.ci_carried.length) {
+    const runs = new Map<string, { files: number; attempts: number[] }>();
+    for (const c of r.ci_carried) {
+      const key = `${c.run}/${c.attempt}`;
+      const seen = runs.get(key) ?? { files: 0, attempts: [] };
+      runs.set(key, { files: Math.max(seen.files, typeof c.rerun === 'number' ? c.rerun : 0), attempts: [...seen.attempts, ...(Array.isArray(c.attempts) ? c.attempts : [])] });
+    }
+    parts.push(`ci_carried=${r.ci_carried.map(c => `${c.lane}:${c.run}/${c.attempt}`).join(',')}${rerunMarker([...runs.values()])}`);
+  }
   if (r.base_red && typeof r.base_red.base === 'string') parts.push(`base_red=${r.base_red.base.slice(0, 12)}`);
   return `SHIP_RECEIPT: ${oneLine(parts.join(' '))}`;
 }
@@ -480,6 +494,14 @@ export function carryReceipt(receipt: ShipReceipt, head: string, carry: CarryRec
   const fromTree = receipt.head_tree ?? at.fromTree;
   const trees = [...new Set([...(prior?.trees ?? []), ...(fromTree ? [fromTree] : [])])].filter(t => t !== at.tree).slice(-20);
   return orderReceipt({ ...receipt, head, head_tree: at.tree, product_patch_id: at.productPatchId || 'none', carry: { ...merged, ...(trees.length ? { trees } : {}) } });
+}
+
+/** The `open` blockers of a `--review-loop` record (gstack-review-scope summary) that no owner ruling closes: write refuses a receipt while any is left (GST-3075). A ruling names the finding by its ledger id or its fingerprint, and with `onHead` counts only when its head is the receipt head or an ancestor of it. */
+export function unruledOpenBlockers(loop: Record<string, unknown> | undefined, ruled: ReadonlyArray<{ finding: string; head?: string }>, onHead?: (head: string) => boolean): string[] {
+  const open = (Array.isArray(loop?.open) ? loop.open : []).flatMap((o: unknown) => typeof o === 'string' ? [{ id: o, names: [o] }]
+    : o && typeof o === 'object' && typeof (o as any).id === 'string' ? [{ id: (o as any).id as string, names: [(o as any).id, (o as any).fingerprint].filter((n): n is string => typeof n === 'string') }] : []);
+  const live = ruled.filter(n => !onHead || (typeof n.head === 'string' && onHead(n.head)));
+  return open.filter(o => !live.some(n => o.names.includes(n.finding))).map(o => o.id);
 }
 
 /** The loop counters the factory scorecard reads (passes, blocking_found, deferred), as `write --review-loop` records them. */

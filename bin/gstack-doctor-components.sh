@@ -336,9 +336,14 @@ gstack_result_anchor() {
     REVIEW_SCOPE_LEDGER) printf '%s' 'review-scope-ledger' ;;
     RECEIPT_CARRY_REFUSED) printf '%s' 'receipt-carry-refused' ;;
     PROSE_LINT_FOUND) printf '%s' 'prose-lint-found' ;;
+    RECEIPT_BLOCKER_OPEN) printf '%s' 'receipt-blocker-open' ;;
     REVIEW_LOOP_EXCEPTION_INVALID) printf '%s' 'review-loop-exception-invalid' ;;
+    CI_CARRY_RERUN_MALFORMED) printf '%s' 'ci-carry-rerun-malformed' ;;
     RECEIPT_CARRY_TREE_MISMATCH) printf '%s' 'receipt-carry-tree-mismatch' ;;
     RECEIPT_CARRY_PRODUCT_CHANGED) printf '%s' 'receipt-carry-product-changed' ;;
+    STOP_UNBOUND) printf '%s' 'stop-unbound' ;;
+    GRANT_SPENT) printf '%s' 'grant-spent' ;;
+    GRANT_UNKNOWN) printf '%s' 'grant-unknown' ;;
     RECEIPT_CARRY_SCOPED_REVIEW) printf '%s' 'receipt-carry-scoped-review' ;;
     DOCS_AUDIT_BLOCKED) printf '%s' 'docs-audit-blocked' ;;
     DOCS_RESULT_INVALID) printf '%s' 'docs-result-invalid' ;;
@@ -372,6 +377,10 @@ gstack_result_anchor() {
     FETCH_VIOLATION) printf '%s' 'fetch-violation' ;;
     FETCH_RERUN_BLOCKED) printf '%s' 'fetch-rerun-blocked' ;;
     FETCH_RERUN_SPENT) printf '%s' 'fetch-rerun-spent' ;;
+    PUSH_REFUSED) printf '%s' 'push-refused' ;;
+    PUSH_REJECTED) printf '%s' 'push-rejected' ;;
+    PUSH_GIT_FAILED) printf '%s' 'push-git-failed' ;;
+    SPAWN_OUTPUT_INCOMPLETE) printf '%s' 'spawn-output-incomplete' ;;
     APPROVAL_RECORD_INVALID) printf '%s' 'approval-record-invalid' ;;
     APPROVAL_RECORD_SECRET) printf '%s' 'approval-record-secret' ;;
     APPROVAL_RECORD_NO_BRANCH) printf '%s' 'approval-record-no-branch' ;;
@@ -435,6 +444,9 @@ gstack_result_anchor() {
     OFFICE_HOURS_PROBE_REFUSED) printf '%s' 'office-hours-probe-refused' ;;
     TASKS_SUPERSEDE_REFUSED) printf '%s' 'tasks-supersede-refused' ;;
     REALITY_RECEIPT_UNRESOLVED) printf '%s' 'reality-receipt-unresolved' ;;
+    ARTIFACT_NOT_AUTOPLAN_RUN) printf '%s' 'artifact-not-autoplan-run' ;;
+    ARTIFACT_JOURNAL_MISMATCH) printf '%s' 'artifact-journal-mismatch' ;;
+    GUARD_ENFORCED) printf '%s' 'guard-enforced' ;;
     CEO_ONLY_CONFLICT) printf '%s' 'ceo-only-conflict' ;;
     CEO_ONLY_AFTER_INIT) printf '%s' 'ceo-only-after-init' ;;
     CEO_ONLY_NO_GATE) printf '%s' 'ceo-only-no-gate' ;;
