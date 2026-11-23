@@ -137,12 +137,20 @@ jobs:
         id: playwright_install
         timeout-minutes: 5
         continue-on-error: true
-        run: npx playwright install --with-deps chromium
+        run: |
+          # Wait for a held apt/dpkg lock instead of failing at once (exit 100
+          # when a timed-out first attempt still holds it; CHE-9158).
+          echo 'DPkg::Lock::Timeout "180";' | sudo tee /etc/apt/apt.conf.d/99-lock-timeout > /dev/null
+          npx playwright install --with-deps chromium
 
       - name: Retry the Playwright Chromium install once
         if: steps.playwright_install.outcome == 'failure'
         timeout-minutes: 5
-        run: npx playwright install --with-deps chromium
+        run: |
+          # Wait for a held apt/dpkg lock instead of failing at once (exit 100
+          # when a timed-out first attempt still holds it; CHE-9158).
+          echo 'DPkg::Lock::Timeout "180";' | sudo tee /etc/apt/apt.conf.d/99-lock-timeout > /dev/null
+          npx playwright install --with-deps chromium
 
       - name: Configure the bundled Chromium sandbox helper
         run: |

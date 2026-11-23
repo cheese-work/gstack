@@ -69,3 +69,26 @@ describe('fork free-suite workflow', () => {
     expect(JSON.stringify(agg.steps)).toContain('--ci-verify');
   });
 });
+
+// CHE-9158: a timed-out first Chromium install can still hold the apt/dpkg lock
+// when the retry starts (run 44265868267, retry exited 100 two seconds later).
+// Every Playwright install step must set a dpkg lock timeout before it runs.
+describe('Playwright Chromium install steps wait for the apt lock', () => {
+  for (const [label, file] of [['fork', FORK], ['upstream', UPSTREAM]] as const) {
+    test(`${label}: each install step sets DPkg::Lock::Timeout first`, () => {
+      const wf = Bun.YAML.parse(fs.readFileSync(file, 'utf-8')) as any;
+      const installs: string[] = [];
+      for (const job of Object.values<any>(wf.jobs)) {
+        for (const step of job.steps ?? []) {
+          const run = String(step.run ?? '');
+          if (!run.includes('playwright install --with-deps')) continue;
+          installs.push(step.name);
+          const lock = run.indexOf('DPkg::Lock::Timeout');
+          expect(lock, step.name).toBeGreaterThanOrEqual(0);
+          expect(lock, step.name).toBeLessThan(run.indexOf('playwright install'));
+        }
+      }
+      expect(installs.length).toBeGreaterThanOrEqual(2);
+    });
+  }
+});
