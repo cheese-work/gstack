@@ -689,7 +689,18 @@ describe('capy skill: factory.md, the auto-loaded "how we work" page', () => {
     // 4,200 for point 12's keep-the-PR-to-the-end and standing-thread rotation clause and point 14's cap of 10 finished PRs before a new fix thread (Garry's "do it" 2026-11-09, relayed by FOUN-32).
     // 4,400 for point 10's report shape, Failed or skipped / Unverified / Also changed lines first, and its pointer to ETHOS.md section 8 for
     // findings write-ups (GST-1455, Garry's "do it" 2026-11-05 on R73; the clause is the wording GEVA-2's dev climb measured, so it is not trimmed).
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4400);
+    // 4,875 for the token lines halved (500M check-in, 250M standing rotation, 50M subagent look; Capy's token counts read about
+    // half since 2026-11-15), point 4's go-forward rule, point 6's relay clause and point 15's subagent rule (crew rules R70, R104,
+    // R105 and R109, each the owner's standing rule).
+    // 5,050 for point 7's two clauses that a green fake or dry run isn't done and that a check must see the change and count
+    // what its name says (the second batch of crew rules, G4 and G10, each reached by three crews on their own).
+    // 5,300 for point 16's queue drain (R119, Garry's rule of 2026-11-22: every Captain that lands PRs runs a standing process
+    // that stops finished PRs piling up; the procedure is crew/docs/captain.md's Drain the queue).
+    // 5,550 for point 17's write-up before a shelve (Garry's "do it" of 2026-11-23: an attempt that fails or is shelved is
+    // documented first, as gstack's default; the template is docs/shelved-attempt.md).
+    // 5,875 for point 18's first versions (Garry's "do it" of 2026-11-23 on GST-3608: a first version's plan quotes the owner's
+    // words with a line each, and gstack-first-use runs his exact try-it steps on the real target first; docs/first-use-check.md).
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(5875);
     expect(text).toMatch(/^# How we work/);
     expect(citationProblems(text)).toEqual([]);
   });

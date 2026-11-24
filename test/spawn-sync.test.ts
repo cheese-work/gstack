@@ -3,7 +3,11 @@
  * reads as a finished command. Bun can return status 0 together with error
  * ENOBUFS and cut-off stdout when the child exits before the overflow kill
  * lands (GSTA-618, seen on Bun 1.4.2 and 1.4.4). A child that ignores SIGTERM
- * reproduces that every time, so these tests do not depend on timing.
+ * reproduces that every time, so these tests do not depend on timing, as long as
+ * its one write fits the Unix socket send buffer (212,992 bytes on Linux): a write
+ * that does not fit takes EPIPE when Bun closes its end, and the child exits 1
+ * within about 10 ms. 200,000 bytes sat 13 KB under that buffer and flaked on CI
+ * (GSTA-712), so the child writes 32 KiB, still far past maxBuffer.
  */
 import { describe, expect, test } from 'bun:test';
 import { spawnSync as rawSpawnSync } from 'node:child_process';
@@ -26,7 +30,7 @@ function realGit(env: NodeJS.ProcessEnv = process.env): string {
   return Bun.which('git', { PATH: env.PATH }) || '/usr/bin/git';
 }
 
-const OVERFLOW = "process.on('SIGTERM', () => {}); process.stdout.write('x'.repeat(200000)); setTimeout(() => {}, 300);";
+const OVERFLOW = "process.on('SIGTERM', () => {}); process.stdout.write('x'.repeat(32768)); setTimeout(() => {}, 300);";
 const overflowArgs = ['-e', OVERFLOW];
 
 describe('spawnSync (lib/spawn-sync.ts)', () => {
@@ -181,11 +185,11 @@ const CHILD_PROCESS = String.raw`['"](?:node:)?child_process['"]`;
 
 /** Whether this source takes spawnSync from node:child_process (named, aliased, namespace, default or require). */
 export function importsRawSpawnSync(text: string): boolean {
-  for (const m of text.matchAll(new RegExp(String.raw`import\s*\{([^}]*)\}\s*from\s*${CHILD_PROCESS}`, 'g'))) {
+  for (const m of text.matchAll(new RegExp(String.raw`import\s*(?:\w+\s*,\s*)?\{([^}]*)\}\s*from\s*${CHILD_PROCESS}`, 'g'))) {
     if (/(?:^|[,{\s])spawnSync\b/.test(m[1].replace(/\btype\s+spawnSync\b/g, ''))) return true;
   }
-  for (const m of text.matchAll(new RegExp(String.raw`import\s+(?:\*\s+as\s+)?(\w+)\s+from\s*${CHILD_PROCESS}`, 'g'))) {
-    if (new RegExp(String.raw`\b${m[1]}\.spawnSync\b`).test(text)) return true;
+  for (const m of text.matchAll(new RegExp(String.raw`import\s+(?:\*\s+as\s+)?(\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+(\w+)))?\s+from\s*${CHILD_PROCESS}`, 'g'))) {
+    if (m.slice(1).some(name => name && new RegExp(String.raw`\b${name}\.spawnSync\b`).test(text))) return true;
   }
   return new RegExp(String.raw`require\(\s*${CHILD_PROCESS}\s*\)`).test(text) && /\bspawnSync\b/.test(text);
 }
@@ -227,6 +231,10 @@ describe('raw spawnSync import ratchet', () => {
     expect(importsRawSpawnSync("import {\n  spawn,\n  spawnSync,\n} from 'node:child_process';")).toBe(true);
     expect(importsRawSpawnSync("import * as cp from 'node:child_process';\ncp.spawnSync('git', [], { timeout: 1000 });")).toBe(true);
     expect(importsRawSpawnSync("const { spawnSync } = require('child_process');")).toBe(true);
+    expect(importsRawSpawnSync("import cp, { spawnSync } from 'node:child_process';")).toBe(true);
+    expect(importsRawSpawnSync("import cp, { spawn } from 'node:child_process';\ncp.spawnSync('git', [], { timeout: 1000 });")).toBe(true);
+    expect(importsRawSpawnSync("import cp, * as all from 'node:child_process';\nall.spawnSync('git', [], { timeout: 1000 });")).toBe(true);
+    expect(importsRawSpawnSync("import cp, { spawn } from 'node:child_process';\ncp.spawn('git', []);")).toBe(false);
     expect(importsRawSpawnSync("import type { SpawnSyncReturns } from 'node:child_process';")).toBe(false);
     expect(importsRawSpawnSync("import { spawn, type spawnSync } from 'node:child_process';")).toBe(false);
     expect(importsRawSpawnSync("import * as cp from 'node:child_process';\ncp.spawn('git', []);")).toBe(false);

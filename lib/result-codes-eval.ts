@@ -11,7 +11,7 @@ export const EVAL_RESULT_CODES = {
   PREREG_INCOMPLETE: {
     anchor: 'prereg-incomplete',
     summary: 'the preregistration file lacks a required section, a section is empty, or the Comparison, Decisions, Scoring or Diagnostics declaration is malformed',
-    fix: 'fill every section `gstack-eval-plan prereg --check` names (bars, decisions, arms, comparison, scoring, decoys, stop rules, held-out exposure) before any priced call: at least two decisions with different actions, and a judge from another model family checked against at least 40 labels at kappa 0.6 or better',
+    fix: 'fill every section `gstack-eval-plan prereg --check` names (bars, decisions, arms, comparison, scoring, decoys, stop rules, held-out exposure) before any priced call: at least two decisions with different actions, and a judge from another model family checked against at least 100 labels (40 for a plan frozen before 2026-11-22) at kappa 0.6 or better',
   },
   // Field list 2 (2026-10-16), W8: preregistered diagnostics run before the freeze commit.
   PREREG_DIAGNOSTIC_UNTESTED: {
@@ -45,6 +45,12 @@ export const EVAL_RESULT_CODES = {
     anchor: 'eval-report-no-answer-only',
     summary: 'a results table counts failures without an answer-only column beside it, so a rise in failures cannot be compared with the grader\'s own reading',
     fix: 'add a column headed answer-only to the same table, counting failures by the grader\'s rule on the final answer alone, and report both readings',
+  },
+  // Eval-loop practice R112 (docs/TESTING_INTERNALS.md#eval-loop-checks): a quick look publishes no number.
+  EVAL_QUICK_LOOK_NO_NUMBER: {
+    anchor: 'eval-quick-look-no-number',
+    summary: 'results --check was given a quick look (kind: quick look), which only opens or closes a question and publishes no number',
+    fix: 'keep the quick look\'s answer as an opened or closed question; to publish a number, write a counted-run preregistration (prereg --init) and run it through the pilot',
   },
   EVAL_ARM_DUPLICATE: {
     anchor: 'eval-arm-duplicate',

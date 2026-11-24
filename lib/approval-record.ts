@@ -186,10 +186,24 @@ function validDate(d: string): boolean {
 
 export interface NewRow { ask: string; words: string; by: string; scope: string; pending?: string; outcome?: string; date?: string; source?: string }
 
-/** An autoplan run id as gstack-autoplan mints it: the run directory's name, a hyphen, six random letters (since GST-3015), a hyphen, then a 14-digit time stamp. */
-const MINTED_RUN_ID = /^[A-Za-z0-9._-]{1,64}-\d{14}$/;
-/** The part of a minted run id the exemption covers: the 14-digit stamp and, when the name ends in a thread code, its digits. */
-const RUN_ID_STAMP = /(?:(?<!\d)\d{1,6}-)?\d{14}$/;
+/**
+ * An autoplan run id as gstack-autoplan mints it: the run directory's name, a hyphen, six random letters (since GST-3015), a hyphen, then a
+ * 14-digit time stamp; or as interactive /autoplan minted it before #4402: the branch name, a hyphen, then a YYYYMMDD-HHMMSS stamp that is
+ * a real calendar time.
+ */
+const MINTED_RUN_ID = /^[A-Za-z0-9._-]{1,64}-(?:\d{14}|\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])-(?:[01]\d|2[0-3])[0-5]\d[0-5]\d)$/;
+/** The part of a minted run id the exemption covers: the stamp and, when the name ends in a thread code or issue number, its digits. */
+const RUN_ID_STAMP = /(?:(?<!\d)\d{1,6}-)?(?:\d{14}|\d{8}-\d{6})$/;
+
+/**
+ * A fix-check round grant's scope as gstack-approvals round-grant writes it (lib/review-round-grant.ts): its stop= token is the
+ * /ship run id, often a PR number, a dash and a short sha (`507-7192673`), which pii.phone.e164 reads as a phone number
+ * (harness-evals #507). Only a phone finding that starts inside that token of the scope field is skipped; the reason, the words
+ * and every other field, a grant-shaped excerpt pasted into them included, are scanned as usual.
+ */
+const GRANT_STOP_SCOPE = /^review_round_grant [0-9a-f]{40} pr=[1-9]\d* kind=fix-check stop=([\w.:-]{1,120}) findings=\S+$/;
+/** A rendered table row whose Covers cell, the one before Still pending, is a whole GRANT_STOP_SCOPE. */
+const GRANT_STOP_ROW = /^\| .* \| (review_round_grant [0-9a-f]{40} pr=[1-9]\d* kind=fix-check stop=)([\w.:-]{1,120}) findings=[^\s|]+ \| (?:[^|\\]|\\.)* \|$/d;
 
 /**
  * Validate and secret-scan one row; the error names the field and rule, never the text. `runId` (import only) is a
@@ -214,7 +228,10 @@ export function buildRow(input: NewRow, branch: string, now = new Date(), runId?
     const at = runId && MINTED_RUN_ID.test(runId.id) ? runId.at[k as 'ask' | 'source'] : undefined;
     const stamp = at === undefined ? 0 : RUN_ID_STAMP.exec(runId!.id)![0].length;
     const inRunId = (f: Finding) => at !== undefined && (f.id === 'pii.phone.e164' || f.id === 'pii.cc') && f.line === 1 && f.col - 1 >= at + runId!.id.length - stamp && f.col - 1 < at + runId!.id.length;
-    const hits = s.findings.filter(f => (f.severity === 'HIGH' || f.severity === 'MEDIUM') && !inRunId(f));
+    const stop = k === 'scope' ? GRANT_STOP_SCOPE.exec(v) : null;
+    const stopAt = stop ? v.indexOf(' stop=') + ' stop='.length : -1;
+    const inStopRun = (f: Finding) => !!stop && f.id === 'pii.phone.e164' && f.line === 1 && f.col - 1 >= stopAt && f.col - 1 < stopAt + stop[1]!.length;
+    const hits = s.findings.filter(f => (f.severity === 'HIGH' || f.severity === 'MEDIUM') && !inRunId(f) && !inStopRun(f));
     if (s.oversize || hits.length) return { code: 'APPROVAL_RECORD_SECRET', message: `field ${k}: ${s.oversize ? 'oversize input' : [...new Set(hits.map(f => f.id))].join(', ')}` };
   }
   const id = 'a-' + createHash('sha256').update([fields.source, date, fields.ask, fields.words, fields.by].join('\u0000')).digest('hex').slice(0, 12);
@@ -352,10 +369,44 @@ export function renderRecord(read: ReadResult, loc: StoreLocation, o: { heading?
   return [...head, ...lines, '', `Source: gstack-approvals record for ${cell(loc.branch)} ${APPROVALS_FOOTER_END}`, ''].join('\n');
 }
 
-interface DecisionLike { id?: string; title?: string; status?: string; chosen?: string | null; recommended?: string | null; gate_rev?: number; answered_at?: string; answered_by?: string; reply?: string; owner_reply?: string; answer_words?: string; words_by?: string; carried_from?: string; label?: string; chosen_text?: string;
+/**
+ * Where a rendered Approvals table shows a fix-check grant's stop= run id (GST-3246): the 1-based line and column span of that token in
+ * each row whose Covers cell is a whole GRANT_STOP_SCOPE, inside a table that opens with APPROVALS_TABLE_HEADER and its rule line and
+ * closes on renderRecord's Source footer. gstack-post skips a pii.phone.e164 finding only inside such a span, so the same digits in any
+ * other cell, in prose or in a table without that footer still report.
+ */
+export function approvalsGrantStopSpans(text: string): Array<{ line: number; from: number; to: number }> {
+  const lines = text.split('\n');
+  const spans: Array<{ line: number; from: number; to: number }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] !== APPROVALS_TABLE_HEADER || lines[i + 1] !== '|---|---|---|---|---|---|') continue;
+    let end = i + 2;
+    while (end < lines.length && lines[end]!.startsWith('| ')) end++;
+    const footer = lines[end + 1] ?? '';
+    if (lines[end] !== '' || !footer.startsWith('Source: gstack-approvals record for ') || !footer.endsWith(APPROVALS_FOOTER_END)) continue;
+    for (let j = i + 2; j < end; j++) {
+      const m = GRANT_STOP_ROW.exec(lines[j]!);
+      if (m) spans.push({ line: j + 1, from: m.indices![2]![0] + 1, to: m.indices![2]![1] });
+    }
+    i = end + 1;
+  }
+  return spans;
+}
+
+interface DecisionLike { id?: string; run?: string; title?: string; status?: string; chosen?: string | null; recommended?: string | null; gate_rev?: number; answered_at?: string; answered_by?: string; reply?: string; owner_reply?: string; answer_words?: string; words_by?: string; carried_from?: string; label?: string; chosen_text?: string;
   carried_gate_from?: string; carried_gate_rev?: number; carried_answered_by?: string; carried_under?: string; carry_check?: string }
 
 const stripRef = (t: string) => t.replace(/\s*\[[^\]]*\]\s*$/, '').trim();
+
+/**
+ * The run id an autoplan run directory answers to: run.json's, else the newest run its gate rows carry (an interactive
+ * /autoplan writes no run.json and appends every run to the same directory, #4402), else the directory name.
+ */
+export function autoplanRunId(runDir: string, run: Record<string, any>, rows: readonly { run?: unknown }[]): string {
+  if (run.run ?? run.id) return String(run.run ?? run.id);
+  const newest = [...rows].reverse().find(r => typeof r.run === 'string' && r.run.length > 0)?.run;
+  return typeof newest === 'string' ? newest : path.basename(runDir);
+}
 
 /**
  * Rows for every answered gate in an autoplan run: one row per answer event (gate_rev, time, answerer), covering
@@ -380,8 +431,9 @@ export function importAutoplan(runDir: string, branch: string, by?: string): App
   const plan = reviewedPlan(runDir, run);
   const planTitle = firstTitle(plan.text) ?? 'the plan';
   const planSha = plan.sha;
-  const runId = String(run.run ?? run.id ?? path.basename(runDir));
-  const answered = rows.filter(r => r.status && r.status !== 'pending' && r.answered_at && !r.carried_from);
+  const runId = autoplanRunId(runDir, run, rows);
+  const own = (run.run ?? run.id) || !rows.some(r => r.run === runId) ? rows : rows.filter(r => r.run === runId);
+  const answered = own.filter(r => r.status && r.status !== 'pending' && r.answered_at && !r.carried_from);
   if (!answered.length) return { code: 'APPROVAL_IMPORT_UNANSWERED', message: `no answered gate in ${runDir}` };
   const groups = new Map<string, DecisionLike[]>();
   for (const r of answered) {
@@ -396,7 +448,7 @@ export function importAutoplan(runDir: string, branch: string, by?: string): App
     const outcome: Outcome = !p1 ? 'pending' : p1.chosen === 'a' || p1.chosen === 'b' ? 'approved' : p1.chosen === 'e' ? 'rejected' : 'pending';
     const items = group.filter(r => r !== p1);
     const changed = items.filter(r => r.chosen && r.recommended && r.chosen !== r.recommended);
-    const stillPending = rows.filter(r => r.gate_rev === rev && r.status === 'pending');
+    const stillPending = own.filter(r => r.gate_rev === rev && r.status === 'pending');
     const answerer = first.answered_by ?? 'unknown';
     const carried = p1?.carried_gate_from ? p1 : undefined;
     const relayed = carried?.carried_answered_by && carried.carried_answered_by !== 'human' ? `, relayed by ${carried.carried_answered_by}` : '';

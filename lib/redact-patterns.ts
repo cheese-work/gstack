@@ -1117,6 +1117,66 @@ function isSourceExpression(span: string, match: RegExpExecArray, sourcePath: st
 }
 
 /**
+ * GST-3474: in Rust source, `name: Type` at the start of a line is a struct
+ * field or parameter type (`token: Option<&str>,`, `key: &RelationshipKey,`)
+ * and `Name::Variant(..) =>` is a match arm's path pattern; neither holds a
+ * value. Only a line-start match with an unquoted name and a `:` passes, and
+ * only when its code up to a trailing `//` comment is made of Rust type and
+ * pattern tokens: names, paths, lifetimes, `&`, `*`, brackets, `+`, `?`,
+ * `!`, `|`, `->`, `=>`, an array length after `;`, and one closing `,`
+ * with nothing after it, which a field or parameter line has and a line of
+ * text does not (a match arm needs no comma). A lowercase name is a primitive
+ * or keyword (`u32`, `str`, `dyn`), a path segment before `::` or a match
+ * arm's binding; an all-caps name over four letters is a path segment or an
+ * array length. pregate reads a .rs file's added lines alone, so a
+ * `token: <value>` line inside a string or block comment arrives looking like
+ * code: a lowercase, all-caps or comma-less value there still reports. A
+ * string or char literal, an `=` assignment, a `.`, a `;`, a second field, or
+ * a name that reads as random (three digit runs, a word over 20 letters, or
+ * case changes about every two letters in a name of 12 or more) still reports.
+ * Another file, a scan without a path, a comment and a `/` start are unchanged.
+ */
+const RUST_SOURCE = /\.rs$/i;
+const RUST_TYPE_TOKEN = /[ \t]+|::|->|=>|'[A-Za-z_]\w*|[A-Za-z_]\w*|\d+|[&*<>()[\]{},;:+?!|]/y;
+const RUST_LOWERCASE_TYPE = /^(?:[iu](?:8|16|32|64|128|size)|f32|f64|bool|char|str|dyn|impl|fn|mut|const|unsafe|extern|for|self|crate|super)$/;
+function readsAsRustName(name: string): boolean {
+  if ((name.match(/\d+/g) ?? []).length > 2) return false;
+  const words = name.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+/g) ?? [];
+  if (words.some((word) => word.length > 20)) return false;
+  return name.length < 12 || words.join("").length >= 3 * words.length;
+}
+function isRustTypeAnnotation(span: string, match: RegExpExecArray, sourcePath: string | undefined): boolean {
+  if (!sourcePath || !RUST_SOURCE.test(sourcePath)) return false;
+  if (match.index > 0 && match.input[match.index - 1] !== "\n") return false;
+  const { start } = spanBounds(match);
+  if (!/^[ +-]{0,2}[ \t]*[A-Za-z_]\w*[ \t]*:[ \t]*$/.test(match.input.slice(match.index, start))) return false;
+  const code = match.input.slice(start).split("\n", 1)[0]!.replace(/\r$/, "").replace(/[ \t]*\/\/.*$/, "");
+  const arm = code.startsWith(":") && code.includes("=>");
+  let depth = 0;
+  let closed = false;
+  let previous = "";
+  for (let i = 0; i < code.length; ) {
+    RUST_TYPE_TOKEN.lastIndex = i;
+    const token = RUST_TYPE_TOKEN.exec(code)?.[0];
+    if (!token) return false;
+    i += token.length;
+    if (/^[ \t]/.test(token)) continue;
+    if (closed) return false;
+    if (/^\d/.test(token) ? previous !== ";" : /^[A-Za-z_]/.test(token) && !readsAsRustName(token)) return false;
+    if (/^[A-Za-z_]/.test(token) && !code.startsWith("::", i)) {
+      if (/^[a-z_]/.test(token) && !RUST_LOWERCASE_TYPE.test(token) && !(arm && depth > 0)) return false;
+      if (!/[a-z]/.test(token) && token.length > 4 && previous !== ";") return false;
+    }
+    if (/^[<([{]$/.test(token)) depth += 1;
+    else if (/^[>)\]}]$/.test(token)) depth = Math.max(0, depth - 1);
+    else if (depth === 0 && token === ";") return false;
+    else if (depth === 0 && token === ",") closed = true;
+    previous = token;
+  }
+  return closed || arm;
+}
+
+/**
  * #4209: in Python and Dart source, an unquoted dotted name chain that is the
  * whole right-hand side of an `=` assignment (`session = self.client.session`,
  * `token = request.auth`) reads an attribute; it holds no credential. Only
@@ -1205,11 +1265,36 @@ function concatenationHoldsSecret(match: RegExpExecArray): boolean {
  * match that starts after other text on its line is a comment's, and its value,
  * less trailing punctuation, reports only when it is a secret run by
  * isSecretRun. Code before the comment is matched from the line start and
- * checked as before.
+ * checked as before. GST-3297: a match that starts after a path's `/` is not
+ * a comment's (`a/token=…`), so it is checked like a line-start match; one
+ * after a comment marker that opens a quoted string or bracket (`"// key: …"`)
+ * is still a comment's.
  */
+const COMMENT_MARKER_BEFORE = /(?:^|[ \t"'`([])(?:#{1,6}|\/{2,3}|\/\*{1,2}|<!--)$/;
+
+/**
+ * GST-3297: a name that starts after a `/` can be the start of a regex
+ * literal (`content.match(/authtoken:\s*(.+)/)`), whose "value" is pattern
+ * text. It is one only when the `/` follows an operator or opening bracket
+ * (never a path segment) and the body before the closing `/` holds regex
+ * syntax (an escape, a character class, a group or a {n,m} quantifier), so a
+ * Markdown link or a YAML value whose path holds a key=value secret still
+ * reports.
+ * Matches from the line start or a comment marker never qualify.
+ */
+const REGEX_LITERAL_OPENER = /(?:[(,=:[!&|?{};]|\breturn)[ \t]*\/$/;
+const REGEX_LITERAL_SYNTAX = /\\|\[[^\]]*\]|\([^)]*\)|\{\d+(?:,\d*)?\}/;
+function isRegexLiteralBody(span: string, match: RegExpExecArray): boolean {
+  const close = span.indexOf("/");
+  if (close < 0 || !REGEX_LITERAL_SYNTAX.test(span.slice(0, close))) return false;
+  const lineStart = match.input.lastIndexOf("\n", match.index - 1) + 1;
+  return REGEX_LITERAL_OPENER.test(match.input.slice(lineStart, match.index));
+}
 function isCommentText(span: string, match: RegExpExecArray): boolean {
   const lineStart = match.input.lastIndexOf("\n", match.index - 1) + 1;
-  if (/^(?:[ +-]?\+|[ +-]?-(?! [^ \t]))?[ \t]*$/.test(match.input.slice(lineStart, match.index))) return false;
+  const before = match.input.slice(lineStart, match.index);
+  if (/^(?:[ +-]?\+|[ +-]?-(?! [^ \t]))?[ \t]*$/.test(before)) return false;
+  if (!COMMENT_MARKER_BEFORE.test(before)) return false;
   return !isSecretRun(span.replace(/[,;.)]+$/, ""));
 }
 
@@ -1649,8 +1734,8 @@ export const PATTERNS: RedactPattern[] = [
     id: "google.api_key",
     tier: "MEDIUM",
     category: "secret",
-    description: "Google API key (AIza…; sometimes a public client key)",
-    regex: /\b(AIza[0-9A-Za-z\-_]{35})\b/,
+    description: "Google API key (AIza… or AQ.…; sometimes a public client key)",
+    regex: /\b(AIza[0-9A-Za-z\-_]{35}|AQ\.[0-9A-Za-z\-_]{20,})\b/,
   },
   {
     id: "jwt",
@@ -1695,7 +1780,12 @@ export const PATTERNS: RedactPattern[] = [
     // matched on its own from the line start. A short first piece followed by
     // `+` is captured so concatenationHoldsSecret can read the rest of the
     // chain.
-    regex: /(?:^(?:[ +-]?\+|[ +-]?-(?! [^ \t]))?|(?<=(?:^|[ \t])(?:#{1,6}|\/{2,3}|\/\*{1,2}|<!--)))[ \t]*(?:export[ \t]+)?["']?[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|DSN|AUTH|COOKIE|SESSION|PRIVATE)["']?[ \t]*[:=][ \t]*["']?([^\s'"]{8,}|[^\s'"]{1,7}(?=["']?[ \t]*\+))["']?/i,
+    // GST-3297: a name may also start right after a `/`, so a key=value
+    // secret at the end of a path (`../password=…`, `cfg/api_key=…`) reports
+    // wherever it sits: a symlink target in `git log -p`, a diff header, a
+    // quoted string, mid-line. The name class excludes `/`, so each attempt
+    // ends at the next separator and the scan stays linear.
+    regex: /(?:^(?:[ +-]?\+|[ +-]?-(?! [^ \t]))?|(?<=(?:^|[ \t])(?:#{1,6}|\/{2,3}|\/\*{1,2}|<!--))|(?<=\/))[ \t]*(?:export[ \t]+)?["']?[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|DSN|AUTH|COOKIE|SESSION|PRIVATE)["']?[ \t]*[:=][ \t]*["']?([^\s'"]{8,}|[^\s'"]{1,7}(?=["']?[ \t]*\+))["']?/i,
     // Only fire on credential-shaped names with high-entropy values — kills
     // `FOO_KEY=changeme` and `cacheKey: <entropic-id>` FPs. #2912: a value
     // that is exactly an environment read (`os.environ["X"]`,
@@ -1706,11 +1796,13 @@ export const PATTERNS: RedactPattern[] = [
     // #2899: a function call assigned to the name is code, not a value (see
     // isCallExpression). #3048, #3630: so is a TS/JSX/Dart/Python type or expression (isSourceExpression).
     // #4209: so is a dotted attribute read assigned with = in Python or Dart (isAttributeReference).
+    // GST-3474: so is a Rust type annotation or match-arm path (isRustTypeAnnotation).
     // #3208: so is a schema field identifier (isSchemaFieldIdentifier).
     // GST-1894: so is a self-named fixture label in a test file (isTestFixtureLabel).
     // GST-3004: so is a dotted field path (isDottedFieldPath, #4289), and so
     // is key-naming text in a comment
-    // (isCommentText). A secret literal in a `+` chain reports first,
+    // (isCommentText). GST-3297: so is a regex literal's body after its
+    // opening `/` (isRegexLiteralBody). A secret literal in a `+` chain reports first,
     // whatever the exemptions say about the chain's first piece
     // (concatenationHoldsSecret).
     validate: (span, match, opts) =>
@@ -1721,12 +1813,40 @@ export const PATTERNS: RedactPattern[] = [
           !isBareEnvRead(span, match) &&
           !isCallExpression(span, match) &&
           !isSourceExpression(span, match, opts?.sourcePath) &&
+          !isRustTypeAnnotation(span, match, opts?.sourcePath) &&
           !isAttributeReference(span, match, opts?.sourcePath) &&
           !isDottedFieldPath(span, match, opts?.sourcePath) &&
           !isCommentText(span, match) &&
+          !isRegexLiteralBody(span, match) &&
           !isSchemaFieldIdentifier(span, match) &&
           !isTestFixtureLabel(span, opts?.sourcePath) &&
           shannonEntropy(span) >= 3.0)),
+  },
+  {
+    id: "env.kv.rust",
+    tier: "MEDIUM",
+    category: "secret",
+    description: "Secret-named Rust let, const or static binding with a high-entropy string literal",
+    // GST-3474 (gbrain #10028): env.kv needs the name to start its line (or
+    // follow a comment marker or `/`), so `let token = "<key>";` and
+    // `const API_KEY: &str = "<key>";` in a .rs file gave no finding while
+    // `token: "<key>"` did. This rule reads a `let`, `let mut`, `const`,
+    // `static` or `static mut` binding, with an optional `pub` or `pub(..)`,
+    // an optional type, and a string, raw or byte literal that is the value
+    // itself or the first argument of `Some`, `String::from`, `Box::new` or
+    // `Cow::Borrowed`/`Cow::Owned`, at a line start (diff markers as env.kv)
+    // or after `//`, `///`, `//!`, `/*` or `/**`. It is its own pattern so
+    // env.kv's matches, and the spans they consume, are unchanged in every
+    // file. validate keeps it to Rust: a scan with a path reports it only in a
+    // .rs file, so a JS or TS `let` or `const` reads exactly as before; a scan
+    // without a path reports it. The name and value get env.kv's checks: a
+    // credential-shaped name, no placeholder or `${` read, and 3.0 bits.
+    regex: /(?:^(?:[ +-]?\+|[ +-]?-(?! [^ \t]))?|(?<=(?:^|[ \t])(?:\/{2,3}!?|\/\*{1,2})))[ \t]*(?:pub(?:\([a-z:_ \t]{0,40}\))?[ \t]+)?(?:let|const|static)[ \t]+(?:mut[ \t]+)?[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|DSN|AUTH|COOKIE|SESSION|PRIVATE)(?:[ \t]*:[^=\n]{1,120}?)?[ \t]*=[ \t]*&?[ \t]*(?:(?:Some|String::from|Box::new|Cow::Borrowed|Cow::Owned)\([ \t]*&?)?(?:b?r#{0,3}|b)?"([^\s"\\]{8,})/i,
+    validate: (span, match, opts) => {
+      if (opts?.sourcePath && !RUST_SOURCE.test(opts.sourcePath)) return false;
+      const name = /\b(?:let|const|static)[ \t]+(?:mut[ \t]+)?(\w+)/i.exec(match[0])?.[1];
+      return !!name && isCredentialShapedEnvName(`${name}=`) && !isPlaceholderSpan(span) && !/^\$\{?[A-Za-z_]/.test(span) && shannonEntropy(span) >= 3.0;
+    },
   },
   {
     id: "auth.bearer",

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, isAbsolute, join, resolve, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, posix, resolve, relative, sep } from 'node:path';
 import {
   CsoError,
   SnapshotManifest,
@@ -77,6 +77,28 @@ export function historyMarker(note: string): string {
 /** Transformation recorded for a repository boundary Git listed as one entry: an untracked nested repository or a registered submodule gitlink. */
 export const NESTED_REPOSITORY =
   'excluded: nested Git repository; Git listed it as a single boundary entry and never descends into it, so its own source and history are not audited with this repository';
+/**
+ * Transformation recorded for a symlink. Git tracks only its target string, so
+ * that string is the whole input: it is reported verbatim and the link is never
+ * followed. Where it points is classified lexically, without touching the
+ * filesystem, so the classification cannot be raced or redirected. A target
+ * that matches any secret pattern, as a whole or in any path segment (the
+ * redactor misses key=value after a slash, and per-segment checks miss a URL),
+ * fails closed: it is withheld and no path derived from it is shown.
+ */
+export function symlinkTransformation(path: string, target: string): string {
+  const unix = target.replace(/\\/g, '/'),
+    secret = redact(target) !== target || unix.split('/').some((part) => redact(part) !== part),
+    normalized = posix.normalize(posix.join(posix.dirname(relativePath(path)), unix)),
+    where = /^(?:[A-Za-z]:)?[\\/]/.test(target)
+      ? 'an absolute path, never resolved'
+      : normalized === '..' || normalized.startsWith('../')
+        ? 'a relative path that escapes the repository, never resolved'
+        : secret
+          ? 'a relative path inside the repository'
+          : `resolves lexically to ${normalized === '.' ? 'the repository root' : JSON.stringify(normalized)} inside the repository`;
+  return `excluded: symlink to ${secret ? 'a target withheld because it matches a secret pattern' : JSON.stringify(target)} (${where}); the link is recorded by its target string and never followed, and a target inside the repository is audited only under its own path`;
+}
 export function inAuditPaths(path: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
@@ -324,6 +346,57 @@ function directoryIdentities(root: string, path: string): DirectoryIdentity[] {
   }
   return identities;
 }
+/** Whether every directory above path exists as a real directory, checked from the root down so no later lstat resolves through a link; false when one is missing, UNSAFE_PATH when one is a symlink or a file. */
+function sourceAncestorsPresent(root: string, path: string): boolean {
+  const rel = relativePath(path);
+  let cursor = root;
+  for (const part of rel.split('/').slice(0, -1)) {
+    cursor = join(cursor, part);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(cursor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      throw new CsoError('UNSAFE_PATH', `Symlink or non-directory source ancestor: ${rel}`);
+  }
+  return true;
+}
+type LinkIdentity = { dev: number; ino: number; mode: number; target: Buffer };
+/** Read a source symlink's own target string under identity checks; the link itself is never followed. */
+function readLinkStable(root: string, path: string): LinkIdentity {
+  const ancestors = directoryIdentities(root, path),
+    full = join(root, relativePath(path)),
+    changed = () => new CsoError('SNAPSHOT_RACE', `Source symlink changed while reading: ${path}`),
+    stat = () => {
+      try {
+        return fs.lstatSync(full);
+      } catch {
+        throw changed();
+      }
+    },
+    named = stat();
+  if (!named.isSymbolicLink()) throw changed();
+  let target: Buffer;
+  try {
+    target = fs.readlinkSync(full, { encoding: 'buffer' });
+  } catch {
+    throw changed();
+  }
+  const current = stat();
+  if (
+    !current.isSymbolicLink() ||
+    current.dev !== named.dev ||
+    current.ino !== named.ino ||
+    current.mode !== named.mode ||
+    current.size !== named.size
+  )
+    throw changed();
+  assertDirectoryIdentities(ancestors, path);
+  return { dev: named.dev, ino: named.ino, mode: named.mode & 0o777, target };
+}
 function assertDirectoryIdentities(identities: DirectoryIdentity[], path: string): void {
   for (const expected of identities) {
     let current: fs.Stats;
@@ -382,6 +455,16 @@ export function assertOpenedFileContained(root: string, full: string, fd: number
   )
     throw new CsoError('SNAPSHOT_RACE', 'Opened source identity changed during containment validation');
 }
+/** A permission error (a sandbox deny rule, a mode-000 file): the capture may withhold an excluded path instead (#4395). */
+const DENIED = new Set(['EACCES', 'EPERM']);
+class UnreadableSource extends CsoError {
+  constructor(
+    path: string,
+    public errno: string,
+  ) {
+    super('UNSAFE_PATH', `Source could not be opened as a regular file: ${path}`);
+  }
+}
 function readStableWith<T>(
   root: string,
   path: string,
@@ -405,6 +488,7 @@ function readStableWith<T>(
     const code = (error as NodeJS.ErrnoException).code;
     if (['ELOOP', 'ENOENT', 'ENOTDIR', 'ENXIO'].includes(code ?? ''))
       throw new CsoError('SNAPSHOT_RACE', `Source changed before it could be opened: ${path}`);
+    if (DENIED.has(code ?? '')) throw new UnreadableSource(path, code!);
     throw new CsoError('UNSAFE_PATH', `Source could not be opened as a regular file: ${path}`);
   }
   try {
@@ -542,10 +626,15 @@ async function rejectSpecialFiles(
   repo: string,
   home: string,
   admission: ReturnType<typeof snapshotAdmission>,
+  auditPaths?: readonly string[],
 ): Promise<void> {
-  // Git intentionally omits untracked FIFOs and devices from ls-files. Walk
-  // pathnames without opening payloads, then ask Git which special names are
-  // ignored so a nonignored FIFO cannot silently disappear from the snapshot.
+  // Git intentionally omits untracked FIFOs, sockets and devices from
+  // ls-files. Walk pathnames without opening payloads, then ask Git which
+  // special names are ignored so a nonignored FIFO cannot silently disappear
+  // from the snapshot. Symlinks are not special here: Git lists every tracked
+  // or nonignored one, and capture records it by its target string without
+  // following it. With --paths, only the audit scope and the directories
+  // leading to it are walked, since nothing outside it is captured.
   admission.time();
   const ignoredRaw = await git(
       repo,
@@ -570,6 +659,9 @@ async function rejectSpecialFiles(
       candidate = candidate.slice(0, slash);
     }
   };
+  const inScope = (path: string) => !auditPaths || inAuditPaths(path, auditPaths),
+    leadsIntoScope = (path: string) =>
+      inScope(path) || auditPaths!.some((prefix) => prefix.startsWith(`${path}/`));
   const special: string[] = [];
   let visited = 0;
   const walk = (at: string, prefix = '') => {
@@ -581,13 +673,20 @@ async function rejectSpecialFiles(
         const path = relativePath(prefix ? `${prefix}/${item.name}` : item.name);
         if (noReadPath(path) || ignoredDirectory(path)) continue;
         admission.count(++visited);
-        const full = join(at, item.name),
+        const full = join(at, item.name);
+        let stat: fs.Stats;
+        try {
           stat = fs.lstatSync(full);
+        } catch (error: any) {
+          // Never opened: the capture withholds an unreadable excluded path.
+          if (DENIED.has(error?.code) && exclusion(path)) continue;
+          throw error;
+        }
         if (stat.isDirectory()) {
-          walk(full, path);
+          if (leadsIntoScope(path)) walk(full, path);
           continue;
         }
-        if (!stat.isFile()) special.push(path);
+        if (!stat.isFile() && !stat.isSymbolicLink() && inScope(path)) special.push(path);
       }
     } finally {
       directory.closeSync();
@@ -658,8 +757,25 @@ export async function capture(
       gitModes = new Map<string, string>(),
       sensitiveEvidence: any[] = [],
       boundaries = new Map<string, fs.Stats>(),
-      absentPaths = new Set<string>();
+      links = new Map<string, LinkIdentity>(),
+      absentPaths = new Set<string>(),
+      lstatDenied = new Set<string>();
     let total = 0;
+    // An excluded secret-like path that cannot be read is already kept out of
+    // snapshot/; record it as an unread input (a coverage gap) instead of
+    // aborting. Every other unreadable path still fails the capture.
+    const withholdUnreadable = (path: string, source: fs.Stats | undefined, errno: string) => {
+      if (!source) lstatDenied.add(path);
+      entries.push({
+        path,
+        pathId: snapshotPathId(repo, path),
+        originalHash: 'not-read',
+        bytes: source?.size ?? 0,
+        mode: (source?.mode ?? 0) & 0o777,
+        transformation: `withheld: ${exclusion(path)} file is unreadable (${errno}); its payload was not assessed`,
+      });
+      guard();
+    };
     guard();
     const objectFormat = (await git(repo, ['rev-parse', '--show-object-format'], home)).trim();
     guard();
@@ -673,7 +789,7 @@ export async function capture(
     if (unmatched !== undefined)
       throw new CsoError('INVALID_ARGUMENT', `--paths entry matches no source file: ${unmatched}`);
     const outsideAudit = (path: string) => auditPaths !== undefined && !inAuditPaths(path, auditPaths);
-    await rejectSpecialFiles(repo, home, admission);
+    await rejectSpecialFiles(repo, home, admission, auditPaths);
     guard();
     const manifest: SnapshotManifest = {
       version: 3,
@@ -697,6 +813,7 @@ export async function capture(
       for (const candidate of list) {
         if (noReadPath(candidate) || outsideAudit(candidate)) continue;
         try {
+          if (!sourceAncestorsPresent(repo, candidate)) continue;
           measured += fs.lstatSync(join(repo, candidate)).size;
           files++;
         } catch {}
@@ -707,15 +824,50 @@ export async function capture(
       guard();
       let source: fs.Stats;
       try {
+        if (!sourceAncestorsPresent(repo, path)) {
+          absentPaths.add(path);
+          continue;
+        }
         source = fs.lstatSync(join(repo, path));
       } catch (error: any) {
         if (error?.code === 'ENOENT') {
           absentPaths.add(path);
           continue;
         }
+        if (DENIED.has(error?.code) && exclusion(path)) {
+          withholdUnreadable(path, undefined, error.code);
+          continue;
+        }
         throw error;
       }
       const size = source.size;
+      // Git stores a symlink as its target string, so that string is the
+      // whole source. Record it and never follow the link, whatever it
+      // points at: a file, a directory, a device, /etc, a loop or nothing.
+      if (source.isSymbolicLink()) {
+        const link = readLinkStable(repo, path),
+          dependency = noReadPath(path);
+        links.set(path, link);
+        gitModes.set(path, '120000');
+        gitHashes.set(
+          path,
+          createHash(objectFormat).update(`blob ${link.target.length}\0`).update(link.target).digest('hex'),
+        );
+        entries.push({
+          path,
+          pathId: snapshotPathId(repo, path),
+          originalHash: dependency || outsideAudit(path) ? 'not-read' : sha256(link.target),
+          bytes: link.target.length,
+          mode: link.mode,
+          transformation: dependency
+            ? `excluded: ${exclusion(path) ?? 'host dependency input'}`
+            : outsideAudit(path)
+              ? OUTSIDE_AUDIT_PATHS
+              : symlinkTransformation(path, link.target.toString()),
+        });
+        guard();
+        continue;
+      }
       // A directory in Git's inventory is a repository boundary, not source:
       // an untracked nested repository (listed with a trailing slash) or a
       // registered submodule's gitlink. Git reports it as one entry and never
@@ -761,7 +913,15 @@ export async function capture(
         continue;
       }
       if (total + size > SOURCE_LIMIT) throw sourceCapError();
-      const { data, mode } = readStable(repo, path, SOURCE_LIMIT);
+      let read: { data: Buffer; mode: number };
+      try {
+        read = readStable(repo, path, SOURCE_LIMIT);
+      } catch (error) {
+        if (!(error instanceof UnreadableSource && exclusion(path))) throw error;
+        withholdUnreadable(path, source, error.errno);
+        continue;
+      }
+      const { data, mode } = read;
       total += data.length;
       guard();
       if (total > SOURCE_LIMIT) throw sourceCapError();
@@ -841,6 +1001,19 @@ export async function capture(
     const assertEntriesStable = (message: string) => {
       for (const e of entries) {
         guard();
+        const link = links.get(e.path);
+        if (link) {
+          const current = readLinkStable(repo, e.path);
+          if (
+            current.dev !== link.dev ||
+            current.ino !== link.ino ||
+            current.mode !== link.mode ||
+            !current.target.equals(link.target)
+          )
+            throw new CsoError('SNAPSHOT_RACE', `${message}: ${e.path}`);
+          guard();
+          continue;
+        }
         if (e.originalHash === 'not-read') {
           const boundary = boundaries.get(e.path);
           if (boundary) {
@@ -857,6 +1030,17 @@ export async function capture(
               throw new CsoError('SNAPSHOT_RACE', `${message}: ${e.path}`);
             guard();
             continue;
+          }
+          if (lstatDenied.has(e.path)) {
+            try {
+              fs.lstatSync(containedFile(repo, e.path));
+            } catch (error: any) {
+              if (DENIED.has(error?.code)) {
+                guard();
+                continue;
+              }
+            }
+            throw new CsoError('SNAPSHOT_RACE', `${message}: ${e.path}`);
           }
           const current = fs.lstatSync(containedFile(repo, e.path)),
             compared = gitHashes.get(e.path);
@@ -1032,7 +1216,7 @@ export async function capture(
     // Finish with a complete source check. Nothing below this block reads the
     // audited repository, so a late nonignored file or restored deletion cannot
     // fall between the final inventory and manifest publication.
-    await rejectSpecialFiles(repo, home, admission);
+    await rejectSpecialFiles(repo, home, admission, auditPaths);
     guard();
     assertEntriesStable('Source changed before snapshot persistence');
     if (canonical(list) !== canonical(await paths(repo, home, headCommit, admission)))

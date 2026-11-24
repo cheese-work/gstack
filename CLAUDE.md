@@ -549,7 +549,7 @@ Key routing rules:
 - Architecture → invoke /plan-eng-review
 - Design system/plan review → invoke /design-consultation or /plan-design-review
 - Full review pipeline → invoke /autoplan
-- Bugs/errors → fix them directly: one read-only check of the cause, or a focused failing test first when the cause is unclear; then fix it and run that test
+- Bugs/errors → fix them directly: one read-only check of the cause, then fix it
 - QA/testing site behavior → invoke /qa or /qa-only
 - Code review/diff check → invoke /review
 - Visual polish → invoke /design-review
@@ -614,9 +614,13 @@ Prefer gbrain when:
     `gbrain search "<terms>" --source gstack-artifacts-<user>`
 
 Grep is still right for known exact strings, regex, multiline patterns, and
-file globs. Run `/sync-gbrain` after meaningful code changes; for ongoing
-auto-sync across all worktrees, run `gbrain autopilot --install` once per
-machine — gbrain's daemon handles incremental refresh on a schedule.
+file globs. Run `/sync-gbrain` after meaningful code changes. For ongoing
+auto-sync across all worktrees, gbrain can add a background job once per
+machine. Before you add it, tell the user this one line: "Adding a background
+job called com.gbrain.autopilot that keeps gbrain's index of your repos fresh
+on a schedule. You'll see it under System Settings → General → Login Items on
+a Mac, or as gbrain-autopilot.service in `systemctl --user` on Linux. Remove it
+with: gbrain autopilot --uninstall". Then run `gbrain autopilot --install`.
 
 Safety: don't run `/sync-gbrain` while `gbrain autopilot` is active — the
 orchestrator refuses destructive source ops when it detects a running autopilot

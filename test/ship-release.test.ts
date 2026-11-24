@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { finishPlanLine } from '../lib/plan-record';
 import { RESULT_CODES } from '../lib/result-codes';
 import { BUMP_NEVER_KEY_VERSION } from '../lib/ship-policy';
 import { lineOf, RELEASE, shipFixture, type ShipFx } from './helpers/ship-bin-fixture';
@@ -173,6 +174,22 @@ describe('finish (Steps 15-16)', () => {
     expect(f.git('ls-remote', '--heads', 'origin', 'feat').stdout).toBe('');
   });
 
+  // Value: protects=finish verifies the pregate against the base it ships to, so a record taken against another base reruns instead of passing;
+  //   fails_when=finish runs gstack-pregate verify with no base and a record cleared under a stacked base passes after a retarget (GST-3493);
+  //   why_new=GST-3493; seam=gstack-pregate verify --base; no_claim=the rerun's own verdict
+  test('finish reruns the pregate when its record was taken against another base', () => {
+    const f = fx();
+    const reviewed = wtree(f);
+    expect(f.run(RELEASE, ['version', '--base', 'main', '--bump', 'micro']).status).toBe(0);
+    const args = ['finish', '--base', 'main', '--reviewed-tree', reviewed, '--docs-post', snapshot(f), '--lane', LANE];
+    expect(f.run(RELEASE, args).status).toBe(0);
+    expect(lineOf(f.run(RELEASE, args).stdout, 'PREGATE')).toBe('PREGATE: verify ok on the stamped tree');
+    const out = path.join(f.work, '.gstack/tmp/pregate.json');
+    const record = JSON.parse(fs.readFileSync(out, 'utf8'));
+    fs.writeFileSync(out, JSON.stringify({ ...record, base: record.base.replace(/^origin\/main@/, 'origin/stack@') }));
+    expect(lineOf(f.run(RELEASE, args).stdout, 'PREGATE')).toMatch(/\(rerun on the stamped tree\)$/);
+  });
+
   // Value: protects=finish --plan resolves the brief's Plan line before any stage: require + Plan: required stops with no commit; a resolvable line prints PLAN: first; fails_when=finishPlan runs after the stages, its stop is dropped, or the line is not first; why_new=plan-record.test.ts covers the helper only; seam=none; no_claim=approved-row resolution (exempt line used)
   test('finish --plan: under GSTACK_PLAN_RECORD=require "Plan: required" stops before any stage; a resolvable line under warn prints PLAN: first', () => {
     const f = fx();
@@ -191,6 +208,7 @@ describe('finish (Steps 15-16)', () => {
     expect(ok.stdout.split('\n')[0]).toBe('PLAN: exempt bug fix');
     expect(ok.stdout).toMatch(/^COMMIT: /m);
     expect(ok.status).toBe(0);
+    expect(finishPlanLine(f.work, f.git('branch', '--show-current').stdout.trim(), f.git('rev-parse', 'HEAD').stdout.trim())).toBe('Plan: exempt: bug fix');
   });
 
   // Value: protects=under changelog_fragments the branch's own fragment is release metadata: version writes nothing and names it in NEXT, finish commits it as the release commit and the route counts it as metadata, and another fragment is still a feature file; fails_when=finish stops on changelog.d/<slug>.md or routes it to re-review (/ship #3648 fix-check 4, CRITICAL);
@@ -311,6 +329,41 @@ describe('push (Step 17)', () => {
     expect(r.status).toBe(3);
     expect(r.stdout).toContain('STOP: non-fast-forward');
     expect(r.stdout).toContain('never force-push');
+  });
+
+  // Value: protects=a push the remote refuses (GitHub's GH007 email privacy block, a protected branch) stops with the remote's own reason and what to change, never the fetch-and-merge route, and keeps PUSH_REJECTED;
+  //   fails_when=any output holding "rejected" is read as a non-fast-forward and sends the user into a merge and a rerun of Steps 5-16 (#4738); seam=git push against a bare origin whose pre-receive hook declines; no_claim=GitHub's exact wording beyond the GH007 code
+  test('a remote refusal stops with its reason, and GH007 says to use the no-reply email, not to merge (#4738)', () => {
+    const f = fx();
+    const hook = path.join(f.origin, 'hooks', 'pre-receive');
+    const decline = (lines: string[]) => fs.writeFileSync(hook, `#!/bin/sh\n${lines.map(l => `echo '${l}' >&2`).join('\n')}\nexit 1\n`, { mode: 0o755 });
+    decline(['error: GH007: Your push would publish a private email address.', 'You can make your email public or disable this protection by visiting:', 'https://github.com/settings/emails']);
+    const gh007 = f.run(RELEASE, ['push', '--branch', 'feat'], { GSTACK_SESSION_KIND: 'unattended' });
+    expect(gh007.status, gh007.stdout + gh007.stderr).toBe(3);
+    expect(gh007.stdout).toContain('GH007');
+    expect(gh007.stdout).toContain('user.email');
+    expect(gh007.stdout).toContain('noreply');
+    expect(gh007.stdout).not.toContain('non-fast-forward');
+    expect(gh007.stdout).not.toContain('merge the remote');
+    expect(lineOf(gh007.stdout, 'PUSH')).toBe('PUSH: failed reason=PUSH_REJECTED');
+    f.git('branch', '-m', 'fix-non-fast-forward-GH007');
+    decline(['Trace: 0123abcd', 'error: GH006: Protected branch update failed for refs/heads/fix-non-fast-forward-GH007.']);
+    const protectedBranch = f.run(RELEASE, ['push', '--branch', 'fix-non-fast-forward-GH007'], { GSTACK_SESSION_KIND: 'unattended' });
+    expect(protectedBranch.status).toBe(3);
+    expect(protectedBranch.stdout).toContain('the remote refused the push (GH006: Protected branch update failed');
+    expect(protectedBranch.stdout).not.toContain('merge the remote');
+    expect(protectedBranch.stdout).not.toContain('noreply');
+    expect(lineOf(protectedBranch.stdout, 'PUSH')).toBe('PUSH: failed reason=PUSH_REJECTED');
+    const token = `ghp_${'a'.repeat(36)}`;
+    decline([`error: GH013: Push cannot contain secrets: ${token}`]);
+    const secret = f.run(RELEASE, ['push', '--branch', 'fix-non-fast-forward-GH007'], { GSTACK_SESSION_KIND: 'unattended' });
+    expect(secret.stdout).toContain('the remote refused the push (GH013: Push cannot contain secrets');
+    expect(secret.stdout).not.toContain(token);
+    decline(['nope']);
+    const plain = f.run(RELEASE, ['push', '--branch', 'fix-non-fast-forward-GH007'], { GSTACK_SESSION_KIND: 'unattended' });
+    expect(plain.stdout).toContain('the remote refused the push (pre-receive hook declined)');
+    expect(lineOf(plain.stdout, 'PUSH')).toBe('PUSH: failed reason=PUSH_REJECTED');
+    expect(f.git('ls-remote', '--heads', 'origin').stdout.trim()).not.toContain('fix-non-fast-forward');
   });
 
   // Value: protects=a never-pushed branch whose name breaks the repo's plain-words policy stops before the push, and a plain name pushes; fails_when=a coded or jargon branch name reaches origin, or a plain one is refused;

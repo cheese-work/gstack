@@ -46,7 +46,8 @@ const routes = decision.route ? decision.routes.map(r => r.skill) : [];
 if (args.includes('--json')) {
   process.stdout.write(`${JSON.stringify({
     switch: { on: sw.on, source: sw.source }, threshold, skills_dir: dir, skills: skills.length, problems,
-    candidates: decision.candidates, route: decision.route?.skill ?? null, routes, reason: decision.route ? null : decision.reason, hint,
+    candidates: decision.candidates, route: decision.route?.skill ?? null, routes,
+    reason: decision.route ? null : decision.reason, hint,
   }, null, 2)}\n`);
   process.exit(0);
 }

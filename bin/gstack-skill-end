@@ -6,7 +6,8 @@
 # The generated prose calls this once at workflow completion:
 #   gstack-skill-end --skill NAME --outcome success|error|abort|unknown \
 #     --session-id ID --tel-start EPOCH [--used-browse yes|no] \
-#     [--error-message MSG] [--failed-step STEP]
+#     [--error-message MSG] [--failed-step STEP] [--exit-reason R] \
+#     [--invoked user|model|chained] [--model-family F] [--checks C]
 #
 # SESSION_ID and TEL_START come from gstack-skill-start's echoed STATUS lines
 # (inline shell vars never survived across Bash tool calls, so durations were
@@ -15,6 +16,7 @@
 
 SKILL_NAME="unknown"; OUTCOME="unknown"; SESSION_ID=""; TEL_START=""
 USED_BROWSE="no"; ERROR_MESSAGE=""; FAILED_STEP=""
+EXIT_REASON=""; INVOKED=""; MODEL_FAMILY=""; CHECKS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --skill)         SKILL_NAME="$2"; shift 2 ;;
@@ -24,8 +26,12 @@ while [ $# -gt 0 ]; do
     --used-browse)   USED_BROWSE="$2"; shift 2 ;;
     --error-message) ERROR_MESSAGE="$2"; shift 2 ;;
     --failed-step)   FAILED_STEP="$2"; shift 2 ;;
+    --exit-reason)   EXIT_REASON="$2"; shift 2 ;;
+    --invoked)       INVOKED="$2"; shift 2 ;;
+    --model-family)  MODEL_FAMILY="$2"; shift 2 ;;
+    --checks)        CHECKS="$2"; shift 2 ;;
     -h|--help)
-      echo 'Usage: gstack-skill-end --skill NAME --outcome success|error|abort|unknown --session-id ID --tel-start EPOCH [--used-browse yes|no] [--error-message MSG] [--failed-step STEP]'
+      echo 'Usage: gstack-skill-end --skill NAME --outcome success|error|abort|unknown --session-id ID --tel-start EPOCH [--used-browse yes|no] [--error-message MSG] [--failed-step STEP] [--exit-reason R] [--invoked user|model|chained] [--model-family F] [--checks passed|failed|not_run|none]'
       echo 'Records skill completion. --help records nothing.'
       exit 0 ;;
     *) shift ;;
@@ -44,7 +50,6 @@ _TEL=off # fork (CHE-5564): telemetry is hard off
 # update-check cache (no network) so the parent can act on it.
 _SESSION_KIND=$("$_BIN/gstack-session-kind" 2>/dev/null || echo "interactive")
 if [ "$_SESSION_KIND" = "unattended" ]; then
-  _TEL="off"
   _CACHED_UPD=$(head -1 "$_GH/last-update-check" 2>/dev/null | tr -cd 'A-Za-z0-9._+ ' || true)
   case "$_CACHED_UPD" in
     UPGRADE_AVAILABLE*) echo "UPGRADE_AVAILABLE: $(printf '%s\n' "$_CACHED_UPD" | awk '{ print $3 (NF >= 4 ? " (main at " $4 ")" : "") }'); run /gstack-upgrade"
@@ -54,12 +59,15 @@ if [ "$_SESSION_KIND" = "unattended" ]; then
 fi
 
 _TEL_END=$(date +%s)
-case "$TEL_START" in ''|*[!0-9]*) TEL_START="$_TEL_END" ;; esac
-_TEL_DUR=$(( _TEL_END - TEL_START ))
+# An unknown start time is an unknown duration (empty, sent as null), not 0.
+_TEL_DUR=""
+case "$TEL_START" in ''|*[!0-9]*) ;; *) _TEL_DUR=$(( _TEL_END - TEL_START )) ;; esac
 [ -n "$SESSION_ID" ] && rm -f "$_GH/analytics/.pending-$SESSION_ID" 2>/dev/null || true
 # Release the workflow lease run gstack-skill-start opened (SESSION_ID starts
 # with its harness pid), so a finished run stops blocking gstack-upgrade (GST-1205).
 [ -n "$SESSION_ID" ] && "$_BIN/gstack-lease" release --pid "${SESSION_ID%%-*}" --run "$SESSION_ID" >/dev/null 2>&1 || true
+_SHIP_RUN=$(git rev-parse --git-path gstack-ship-run 2>/dev/null || true)
+[ -n "$SESSION_ID" ] && [ -n "$_SHIP_RUN" ] && [ -f "$_SHIP_RUN" ] && "$_BIN/gstack-ship-run" skill-end --run "$SESSION_ID" >/dev/null 2>&1 || true
 
 # Record completion before the final drain, including its durable enqueue.
 # The normal sync gates still decide publication: full may sync timelines,

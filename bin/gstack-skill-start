@@ -36,6 +36,7 @@
 # (same guard as bin/gstack-brain-sync; pinned by
 # test/heredoc-pipe-deadlock.test.ts).
 BASH_COMPAT=50
+GSTACK_BUN_CONFIG=/dev/null; case "${OSTYPE:-}" in msys*|cygwin*) if command -v cygpath >/dev/null 2>&1; then GSTACK_BUN_CONFIG=NUL; fi ;; esac
 
 SKILL_NAME=""
 MODEL_OVERLAY="none"
@@ -125,8 +126,8 @@ fi
 # Session markers: local functional state (live-session count), never sent and
 # not gated on telemetry (#1150). README "Privacy & Telemetry" describes them.
 mkdir -p "$_GH/sessions" 2>/dev/null || true
-touch "$_GH/sessions/$PARENT_PID" 2>/dev/null || true
 find "$_GH/sessions" -mmin +120 -type f -exec rm {} + 2>/dev/null || true
+touch "$_GH/sessions/$PARENT_PID" 2>/dev/null || true
 _SESSIONS=$(find "$_GH/sessions" -mmin -120 -type f 2>/dev/null | wc -l | tr -d ' ')
 
 _PROACTIVE=$("$_BIN/gstack-config" get proactive 2>/dev/null || echo "core")
@@ -141,9 +142,9 @@ case "$_PROACTIVE" in
   core|all|off) ;;
   *) _PROACTIVE="core" ;;
 esac
-# off silences every unasked surface below: the tips, the one-time prompt and
-# the CLAUDE.md routing offer. A stored off also answers the one-time prompt,
-# so the marker is written here, before STATUS reports it.
+# off silences every unasked surface below: the tips and the one-time prompt.
+# A stored off also answers the one-time prompt, so the marker is written
+# here, before STATUS reports it.
 case "$_PROACTIVE" in off) _PROACTIVE_OFF="yes" ;; *) _PROACTIVE_OFF="no" ;; esac
 _PROACTIVE_PROMPTED=$([ -f "$_GH/.proactive-prompted" ] && echo "yes" || echo "no")
 if [ "$_PROACTIVE_PROMPTED" = "no" ] && [ "$_PROACTIVE_OFF" = "yes" ]; then
@@ -326,9 +327,7 @@ for _RF in CLAUDE.md AGENTS.md; do
     _HAS_ROUTING="yes"
   fi
 done
-_ROUTING_DECLINED=$("$_BIN/gstack-config" get routing_declined 2>/dev/null || echo "false")
 echo "HAS_ROUTING: $_HAS_ROUTING"
-echo "ROUTING_DECLINED: $_ROUTING_DECLINED"
 _VENDORED="no"
 if [ -d ".claude/skills/gstack" ] && [ ! -L ".claude/skills/gstack" ]; then
   if [ -f ".claude/skills/gstack/VERSION" ] || [ -d ".claude/skills/gstack/.git" ]; then
@@ -407,15 +406,38 @@ if [ -n "$_GBRAIN_CONFIG" ] && [ -f "$_GBRAIN_CONFIG" ] && command -v gbrain >/d
     if [ -n "$_REPO_TOP" ] && [ -f "$_REPO_TOP/.gbrain-source" ]; then
       _GBRAIN_PIN_PATH="$_REPO_TOP/.gbrain-source"
     fi
+    # The repo's gbrain policy tier: read-only never indexes code (so no pin
+    # ever comes), deny allows no gbrain use at all (#4419). get --batch never
+    # quarantines a corrupt store; any read it refuses counts as deny.
+    _GBRAIN_REPO_TIER=$(printf '%s\n' "$(git config --get remote.origin.url 2>/dev/null)" | "$_BIN/gstack-gbrain-repo-policy" get --batch 2>/dev/null) || _GBRAIN_REPO_TIER=deny
+    case "$_GBRAIN_REPO_TIER" in
+      none) _GBRAIN_REPO_TIER=unset ;;
+      read-write|read-only|deny) ;;
+      *) _GBRAIN_REPO_TIER=deny ;;
+    esac
     if [ -n "$_GBRAIN_PIN_PATH" ]; then
       echo "GBrain configured. Prefer \`gbrain search\`/\`gbrain query\` over Grep for"
       echo "semantic questions; use \`gbrain code-def\`/\`code-refs\`/\`code-callers\` for"
       echo "symbol-aware code lookup. See \"## GBrain Search Guidance\" in CLAUDE.md."
       echo "Run /sync-gbrain to refresh."
-    else
+    elif [ "$_GBRAIN_REPO_TIER" = "read-only" ]; then
+      echo "GBrain configured, but this repo's gbrain policy is read-only, so its code is"
+      echo "never indexed and this worktree stays unpinned. Use Grep for code questions."
+      echo "To index it: gstack-gbrain-repo-policy set <origin url> read-write, then /sync-gbrain --full."
+    elif [ "$_GBRAIN_REPO_TIER" != "deny" ]; then
       echo "GBrain configured but this worktree isn't pinned yet. Run \`/sync-gbrain --full\`"
       echo "before relying on \`gbrain search\` for code questions in this worktree."
       echo "Falls back to Grep until pinned."
+    fi
+    # A skill whose SKILL.md declares gbrain.context_queries gets them here,
+    # rendered by gstack-brain-context-load (#4329). Off with
+    # \`gstack-config set gbrain_context_load off\`, and never in a deny repo.
+    _CTX_SKILL_FILE="$_BIN/../$SKILL_NAME/SKILL.md"
+    if [ "$_GBRAIN_REPO_TIER" != "deny" ] && [[ "$SKILL_NAME" =~ ^[a-z0-9-]{1,60}$ ]] \
+      && grep -q '^  context_queries:' "$_CTX_SKILL_FILE" 2>/dev/null \
+      && [ "$("$_BRAIN_CONFIG_BIN" get gbrain_context_load 2>/dev/null)" != "off" ]; then
+      bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$_BIN/gstack-brain-context-load.ts" \
+        --skill-file "$_CTX_SKILL_FILE" --skill "$SKILL_NAME" --repo "${SLUG:-unknown}" 2>/dev/null | _sanitize || true
     fi
   fi
 fi
@@ -653,62 +675,6 @@ Say once as a heads-up (then continue): Tip: gstack pays off when you complete o
 EOI
     touch "$_GH/.first-loop-tip-shown" 2>/dev/null || true
   fi
-fi
-
-# Routing injection (interactive: AUQ + CLAUDE.md append + commit). The body
-# is a quoted heredoc (markdown backticks must stay literal), so the resolved
-# bin path is substituted via sed on the __BIN__ placeholder. Under off the
-# routing rules are the auto-invocation the user turned off, so no offer.
-# Under core the heredoc's rule lines are replaced by the core rules below, so
-# the offered section routes only the four core skills.
-_CORE_ROUTING_RULES=$(cat <<'EOR'
-- Product ideas/brainstorming → invoke /office-hours
-- QA/testing site behavior → invoke /qa
-- Code review/diff check → invoke /review
-- Ship/deploy/PR → invoke /ship
-
-Do not suggest or auto-invoke other gstack skills: they run when the user types them, or when a running skill hands off to them (`gstack-config set proactive all` routes every skill).
-EOR
-)
-_routing_offer() {
-  if [ "$_PROACTIVE" = "core" ]; then
-    _GSTACK_CORE_RULES="$_CORE_ROUTING_RULES" awk '/^- .* → / { if (!done) { print ENVIRON["_GSTACK_CORE_RULES"]; done = 1 } next } { print }'
-  else
-    cat
-  fi | sed "s|__BIN__|$_BIN|g"
-}
-if [ "$_HAS_ROUTING" = "no" ] && [ "$_ROUTING_DECLINED" = "false" ] && [ "$_PROACTIVE_PROMPTED" = "yes" ] && [ "$_PROACTIVE_OFF" = "no" ]; then
-  _routing_offer <<'EOI' | _emit_block routing-injection
-gstack works best when the project CLAUDE.md includes skill routing rules. If no CLAUDE.md exists in the project root, create it. Use AskUserQuestion:
-
-> gstack works best when your project's CLAUDE.md includes skill routing rules.
-
-Options: A) Add routing rules to CLAUDE.md (recommended)  B) No thanks, I'll invoke skills manually
-
-If A: append this section to the end of CLAUDE.md, then commit it (`git add CLAUDE.md && git commit -m "chore: add gstack skill routing rules to CLAUDE.md"`):
-
-## Skill routing
-
-When the user's request matches an available skill, invoke it via the Skill tool. Route only to skills in the session's available-skills list; answer directly for quick questions or small scoped edits.
-
-Key routing rules:
-- Product ideas/brainstorming → invoke /office-hours
-- Strategy/scope → invoke /plan-ceo-review
-- Architecture → invoke /plan-eng-review
-- Design system/plan review → invoke /design-consultation or /plan-design-review
-- Full review pipeline → invoke /autoplan
-- Bugs/errors → fix them directly: one read-only check of the cause, or a focused failing test first when the cause is unclear; then fix it and run that test
-- QA/testing site behavior → invoke /qa or /qa-only
-- Code review/diff check → invoke /review
-- Visual polish → invoke /design-review
-- Building UI → once it renders, invoke /design-review --build <preview url> (opt-in)
-- Ship/deploy/PR → invoke /ship (merge + deploy: the user types /land-and-deploy)
-- Save progress → invoke /context-save
-- Resume context → invoke /context-restore
-- Author a backlog-ready spec/issue → invoke /spec
-
-If B: run `__BIN__/gstack-config set routing_declined true` and say they can re-enable with `__BIN__/gstack-config set routing_declined false`. This only happens once per project.
-EOI
 fi
 
 # Vendoring deprecation (interactive; slug-scoped marker).

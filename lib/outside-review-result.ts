@@ -66,6 +66,13 @@ function codexErrorLines(stderr: string): string[] {
 }
 /** The account's usage limit: Codex's line carries the reset time, so it is relayed verbatim. Same signature as the probe. */
 export const QUOTA_FAILURE = /usage limit|insufficient_quota|exceeded your current quota|quota exceeded/i;
+/**
+ * HTTP 402 Payment Required: a metering proxy's allowance or the account's budget, never an auth failure. The 402 counts only
+ * as a status (`status 402`, `HTTP 402`, `"code":402`, `Error: 402`, `402 Payment Required`), never inside a request id or a duration.
+ */
+export const BUDGET_FAILURE = /(?:http(?:\/\d(?:\.\d)?)?|status|code|error)\b[\s:="']{0,4}402\b|\b402\s+payment|payment[\s_-]?required/i;
+/** How lib/claude-code.ts opens its budget stop (a 402 or a usage limit): read as budget_exhausted, never as Codex's quota stop. */
+export const CLAUDE_CODE_BUDGET_STOP = "Claude Code's provider refused the call because";
 /** OpenAI's cyber-security refusal (R95): Capy relays it as `OpenAI key declined the request: cyber_policy: ...`; read from error lines only. */
 export const CYBER_POLICY_REFUSAL = /\bcyber_policy\b/;
 /** A plain HTTP 429 or rate limit: transient, so a separate reason from the quota. */
@@ -88,6 +95,19 @@ function commandEvidence(events: string): { attempted: number; succeeded: number
   return { attempted, succeeded, failedOutput };
 }
 
+/** Codex's own failure events under `--json` (`error`, `turn.failed`): its stderr carries no error line for an HTTP refusal. */
+function failureEventMessages(events: string): string[] {
+  const messages: string[] = [];
+  for (const line of events.split(/\r?\n/)) {
+    if (!line.trim().startsWith('{')) continue;
+    let event: any;
+    try { event = JSON.parse(line); } catch { continue; }
+    const message = event?.type === 'error' ? event.message : event?.type === 'turn.failed' ? event.error?.message : undefined;
+    if (typeof message === 'string' && message.trim()) messages.push(message.trim());
+  }
+  return messages;
+}
+
 function stderrHead(stderr: string): string | undefined {
   return stderr.split(/\r?\n/).map(line => line.trim()).find(Boolean)?.slice(0, 240);
 }
@@ -96,19 +116,27 @@ function execution(input: OutsideReviewInput): OutsideReviewClassification['exec
   const stderr = input.stderr ?? '';
   const exit = input.exit ?? 0;
   const sandbox = (output: string) => output.match(SANDBOX_FAILURE)?.[0].trim().slice(0, 240);
-  const cyber = (input.providerError ?? '').split(/\r?\n/).map(line => line.trim()).find(line => CYBER_POLICY_REFUSAL.test(line));
+  const hostErrors = (input.providerError ?? '').split(/\r?\n/).map(line => line.trim());
+  const cyber = hostErrors.find(line => CYBER_POLICY_REFUSAL.test(line));
   if (cyber) return { state: 'unavailable', reason: 'cyber_policy_refused', detail: cyber.slice(0, 240) };
+  const hostBudget = hostErrors.find(line => BUDGET_FAILURE.test(line));
+  if (hostBudget) return { state: 'unavailable', reason: 'budget_exhausted', detail: hostBudget.slice(0, 240) };
+  const hostQuota = hostErrors.find(line => QUOTA_FAILURE.test(line));
+  if (hostQuota) return { state: 'unavailable', reason: 'quota_exhausted', detail: hostQuota.slice(0, 240) };
   if (exit !== 0) {
     const detail = sandbox(stderr);
     if (detail) return { state: 'unavailable', reason: 'sandbox_unavailable', detail };
-    const errors = exit !== 124 ? codexErrorLines(stderr) : [];
+    const final = exit !== 124 ? failureEventMessages(input.events ?? '').at(-1) : undefined;
+    const errors = exit === 124 ? [] : final !== undefined ? [final] : codexErrorLines(stderr);
     const refusal = errors.find(line => CYBER_POLICY_REFUSAL.test(line));
     if (refusal) return { state: 'unavailable', reason: 'cyber_policy_refused', detail: refusal.slice(0, 240) };
+    const budget = errors.find(line => BUDGET_FAILURE.test(line) || line.includes(CLAUDE_CODE_BUDGET_STOP));
+    if (budget) return { state: 'unavailable', reason: 'budget_exhausted', detail: budget.slice(0, 240) };
     const quota = errors.find(line => QUOTA_FAILURE.test(line));
     if (quota) return { state: 'unavailable', reason: 'quota_exhausted', detail: quota.slice(0, 240) };
     const rateLimit = errors.find(line => RATE_LIMIT_FAILURE.test(line));
     if (rateLimit) return { state: 'unavailable', reason: 'rate_limited', detail: rateLimit.slice(0, 240) };
-    const head = stderrHead(stderr);
+    const head = final?.slice(0, 240) ?? stderrHead(stderr);
     return { state: 'unavailable', reason: exit === 124 ? 'timeout' : 'execution_failed', detail: head ? `exit ${exit}: ${head}` : `exit ${exit}` };
   }
   const commands = commandEvidence(input.events ?? '');
@@ -138,7 +166,7 @@ const AUTOPLAN_LEVEL: Record<string, Severity | undefined> = { Critical: 'P0', H
 const WORD = '(critical|high|medium|low)';
 const SEVERITY_LABELS = [
   new RegExp(`\\b(?:severity|priority)\\b[\\t ]*[:=][\\t ]*(?:\\*\\*|__|\\[|\`)*${WORD}\\b`, 'gim'),
-  new RegExp(`^[\\t ]*(?:>[\\t ]*)?(?:#{1,6}[\\t ]+|[-+*][\\t ]+|\\(?\\d{1,3}[.)][\\t ]+)?(?:\\*\\*|__)?\\[?${WORD}\\]?(?:\\*\\*|__)?[\\t ]*(?::|\u2014|\u2013|-[\\t ]|\\]|\\(|\\*\\*[\\t ]*(?:\u2014|\u2013|-[\\t ]))`, 'gim'),
+  new RegExp(`^[\\t ]*(?:>[\\t ]*)?(?:#{1,6}[\\t ]+)?(?:[-+*][\\t ]+|\\(?\\d{1,3}[.)][\\t ]+)?(?:\\*\\*|__)?\\[?${WORD}\\]?(?:\\*\\*|__)?[\\t ]*(?::|\u2014|\u2013|-[\\t ]|\\]|\\(|\\*\\*[\\t ]*(?:\u2014|\u2013|-[\\t ]))`, 'gim'),
   new RegExp(`(?:\\*\\*|__)\\[?${WORD}\\]?:?(?:\\*\\*|__)`, 'gi'),
   new RegExp(`\\|[\\t ]*(?:\\*\\*)?${WORD}(?:\\*\\*)?[\\t ]*(?=\\|)`, 'gi'),
   new RegExp(`[\\t ](?:\u2014|\u2013|-)[\\t ]+(?:\\*\\*|__)?${WORD}(?:\\*\\*|__)?[\\t ]*[.;]?[\\t ]*$`, 'gim'),
@@ -188,7 +216,7 @@ function recommendationHeading(text: string): string {
  * or `Verdict: not ready`, while the evidence for clean keeps it blanked. One pass:
  * an opener closes only when a later marker of its kind is at least as long.
  */
-const CODE_LABEL_BEFORE = /^[\t ]*(?:>[\t ]*)?(?:#{1,6}[\t ]+|[-+*][\t ]+|\(?\d{1,3}[.)][\t ]+)?(?:\*\*|__)?$|\b(?:severity|priority)[\t ]*[:=][\t ]*(?:\*\*|__)?$|\|[\t ]*(?:\*\*)?$/i;
+const CODE_LABEL_BEFORE = /^[\t ]*(?:>[\t ]*)?(?:#{1,6}[\t ]+)?(?:[-+*][\t ]+|\(?\d{1,3}[.)][\t ]+)?(?:\*\*|__)?$|\b(?:severity|priority)[\t ]*[:=][\t ]*(?:\*\*|__)?$|\|[\t ]*(?:\*\*)?$/i;
 function withoutCode(text: string, readUnclosed = false): string {
   const lines = text.split(/\r?\n/);
   const markers = lines.map(line => /^[\t ]*(`{3,}|~{3,})/.exec(line)?.[1]);
@@ -220,7 +248,7 @@ function withoutCode(text: string, readUnclosed = false): string {
  * bullet, number or bold, as `[P1]`, `P1:`, `P1 —`, `**P1 — x**`, `**P1** — x`,
  * `P1 (x)` or a bare `P1` ending the line; or a table cell `| P1 |`.
  */
-const LABEL_START = '^[\\t ]*(?:>[\\t ]*)?(?:#{1,6}[\\t ]+|[-+*][\\t ]+|\\(?\\d{1,3}[.)][\\t ]+)?(?:\\*\\*|__)?';
+const LABEL_START = '^[\\t ]*(?:>[\\t ]*)?(?:#{1,6}[\\t ]+)?(?:[-+*][\\t ]+|\\(?\\d{1,3}[.)][\\t ]+)?(?:\\*\\*|__)?';
 const LABELED_P = new RegExp(`${LABEL_START}(?:\\[(P[0-3])\\]|(P[0-3])(?:\\*\\*|__)?[\\t ]*(?::|\u2014|\u2013|-[\\t ]|\\(|$|(?:\\*\\*|__)[\\t ]*(?::|\u2014|\u2013|-[\\t ]|$)))`, 'gm');
 const TABLE_P = /\|[\t ]*(?:\*\*)?\[?(P[0-3])\]?(?:\*\*)?[\t ]*(?=\|)/g;
 const LABEL_P = new RegExp(`${LABEL_START}\\[?P[0-3]\\b`);

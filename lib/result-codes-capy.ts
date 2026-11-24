@@ -13,7 +13,12 @@ export const CAPY_RESULT_CODES = {
   APPROVAL_RECORD_INVALID: {
     anchor: 'approval-record-invalid',
     summary: 'an approval row is missing a required field, holds a value outside its enum, or exceeds a length cap',
-    fix: 'rerun gstack-approvals add with every required flag (--ask, --words, --scope, --by) inside the caps it names; nothing was written',
+    fix: 'rerun the command this line names with the flag its detail names, inside its caps (gstack-approvals --help lists each command\'s flags); nothing was written',
+  },
+  APPROVAL_RULING_RUN_OPEN: {
+    anchor: 'approval-ruling-run-open',
+    summary: 'gstack-approvals rule ran on a checkout where a /ship run is open, with no --owner-ref, and a run\'s own runner never rules on its findings',
+    fix: 'relay the owner\'s ruling with --owner-ref <thread code>:<message id or timestamp> --by <the owner> --words <their exact words>, or record it after the run stops; nothing was written',
   },
   APPROVAL_RECORD_SECRET: {
     anchor: 'approval-record-secret',
@@ -202,8 +207,8 @@ export const CAPY_RESULT_CODES = {
   },
   FIRST_USE_PLAN_UNREADY: {
     anchor: 'first-use-plan-unready',
-    summary: 'the plan has no usable ### Day one table to freeze (missing, malformed, fewer than five complete rows, or a row still marked assumed)',
-    fix: 'add or fix the ### Day one table (action, frequency, source, feature, route, first build, check) and confirm every assumed row with the owner, then run start again',
+    summary: 'the plan has no usable ### Day one table or ### Owner\'s words to freeze (missing, malformed, fewer than five complete rows, a row still marked assumed or citing no quote, or a quote with no time or line)',
+    fix: 'quote the owner\'s messages that state the job under ### Owner\'s words (who, when, "words" → does it | choice), cite them from the five ### Day one rows as owner words <n>, then run start again',
   },
   FIRST_USE_PLAY_SPEC_INCOMPLETE: {
     anchor: 'first-use-play-spec-incomplete',
@@ -227,7 +232,7 @@ export const CAPY_RESULT_CODES = {
   },
   FIRST_USE_REFUSED: {
     anchor: 'first-use-refused',
-    summary: 'the build has not cleared its first-use check, so no "try this build" message or "v1 is ready" report may go out',
-    fix: 'act on each reason the line lists: replay the failed or unplayed actions, rerun links within 15 minutes of sending, add the predicted score, or start a new run for a new build or changed day-one rows',
+    summary: 'the build has not cleared its first-use check, so no try-it message or "v1 is ready" report may go out',
+    fix: 'act on each reason the line lists: fix and replay each unplayed, broken, wrong, thin day-one or needs-lookup step, rerun links within 15 minutes of sending, add the predicted score, or start a new run for a new build or changed rows or quotes',
   },
 } satisfies Record<string, ResultCode>;

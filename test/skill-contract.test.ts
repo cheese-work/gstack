@@ -24,11 +24,11 @@ const contractOf = (name: string): Contract => {
   if (!parsed || !('contract' in parsed)) throw new Error(`fixture ${name} has no valid contract`);
   return parsed.contract;
 };
-const check = (lines: string[], skill = 'verify') => checkContract(parseTranscript(lines.join('\n')), skill, contractOf(skill));
+const check = (lines: string[], skill = 'build-check') => checkContract(parseTranscript(lines.join('\n')), skill, contractOf(skill));
 
 describe('schema v1', () => {
   test('block and flow style parse to the same items', () => {
-    expect(contractOf('verify').items.map(i => [i.id, i.kind])).toEqual([['debug-report', 'report_labels']]);
+    expect(contractOf('build-check').items.map(i => [i.id, i.kind])).toEqual([['debug-report', 'report_labels']]);
     expect(contractOf('review').items.map(i => i.kind)).toEqual(['selected_specialists_dispatched', 'agent_dispatch', 'report_labels']);
   });
 
@@ -45,6 +45,8 @@ describe('schema v1', () => {
       ['contract:\n  version: 1\n  items: [{id: Bad_ID, kind: agent_dispatch, match: x}]', 'id must match'],
       ['contract:\n  version: 1\n  items: [{id: a, kind: check_after_last_edit}]', 'every item uses a removed kind'],
       ['contract: [unclosed', 'not valid YAML'],
+      ['contract:\n  version: 1\n  items: [{id: a, kind: report_labels, heading: X, labels: [Y], task_name: z}]', 'task_name applies only to agent_dispatch'],
+      ['contract:\n  version: 1\n  items: [{id: a, kind: agent_dispatch, match: x, task_name: "two words"}]', 'task_name must match'],
     ];
     for (const [fm, msg] of bad) {
       const r = parseContract(fm);
@@ -65,11 +67,11 @@ describe('transcript parsing', () => {
   test('skill loads: Skill tool, typed /command, Read of a SKILL.md; sidechain records ignored', () => {
     const t = parseTranscript([
       tool('s', 'Skill', { skill: 'gstack:review' }),
-      slash('verify'),
+      slash('build-check'),
       tool('r', 'Read', { file_path: '/home/u/.claude/skills/qa/SKILL.md' }),
       JSON.stringify({ type: 'assistant', isSidechain: true, message: { content: [{ type: 'tool_use', id: 'x', name: 'Skill', input: { skill: 'ship' } }] } }),
     ].join('\n'));
-    expect(skillLoads(t).map(l => [l.skill, l.via])).toEqual([['review', 'skill-tool'], ['verify', 'slash-command'], ['qa', 'read']]);
+    expect(skillLoads(t).map(l => [l.skill, l.via])).toEqual([['review', 'skill-tool'], ['build-check', 'slash-command'], ['qa', 'read']]);
   });
 
   test('an unknown shape throws; a partial last line does not', () => {
@@ -132,6 +134,12 @@ describe('checkContract is a pure function of the transcript', () => {
     expect(parseContract('contract:\n  version: 1\n  items: [{id: a, kind: selected_specialists_dispatched, marker: "Dispatching N specialists:"}]')).toHaveProperty('contract');
   });
 
+  test('GST-3375: on Claude Code a task name never stands in for the marker, whatever the Agent call carries', () => {
+    const item = { id: 'adversarial', kind: 'agent_dispatch' as const, match: 'Think like an attacker', task_name: 'adversarial' };
+    const t = parseTranscript([slash('review'), tool('s', 'Agent', { description: 'adversarial', prompt: 'gAAAAABnot-a-brief-at-all-just-a-token', task_name: 'adversarial', sealed: true }), result('s', '[]')].join('\n'));
+    expect(checkContract(t, 'review', { version: 1, items: [item] }).items[0]).toMatchObject({ status: 'missing', detail: 'no Agent dispatch matches /Think like an attacker/' });
+  });
+
   test('GST-1242: the waive command in the block text is a literal path to bash, and the transcript reader counts it', () => {
     const r = check(J1_TRANSCRIPT);
     const bin = "/opt/it's gstack $(touch pwned)/bin/gstack-skill-contract";
@@ -159,7 +167,7 @@ describe('checkContract is a pure function of the transcript', () => {
     expect(STATUS_RE.test('The status is DONE')).toBe(false);
     expect(check(INTERACTIVE_TURNS[0]).pendingQuestion).toBe(true);
     expect(check(INTERACTIVE_TURNS.flat()).statusLine).toBe('DONE');
-    expect(check([slash('verify'), tool('q', 'AskUserQuestion', { questions: [] })]).pendingQuestion).toBe(true);
+    expect(check([slash('build-check'), tool('q', 'AskUserQuestion', { questions: [] })]).pendingQuestion).toBe(true);
     const notified = [slash('review'), tool('a', 'Agent', { description: 'Testing', run_in_background: true }), result('a', 'launched'),
       meta('<task-notification>agent a completed</task-notification>')];
     expect(check(notified, 'review').pendingAgents).toEqual([]);
@@ -167,27 +175,27 @@ describe('checkContract is a pure function of the transcript', () => {
   });
 
   test('items are checked from the skill\'s LAST load: an earlier run\'s report does not satisfy a new one', () => {
-    const r = check([...INTERACTIVE_TURNS.flat(), user('another bug'), tool('s', 'Skill', { skill: 'verify' }), tool('e', 'Edit', { file_path: 'x' })]);
+    const r = check([...INTERACTIVE_TURNS.flat(), user('another bug'), tool('s', 'Skill', { skill: 'build-check' }), tool('e', 'Edit', { file_path: 'x' })]);
     expect(r.missing).toEqual(['debug-report']);
   });
 
-  test('an early exit counts as met: /review "Nothing to review" or STATUS: BLOCKED, /verify Status: BLOCKED in its DEBUG REPORT', () => {
+  test('an early exit counts as met: /review "Nothing to review" or STATUS: BLOCKED, /build-check Status: BLOCKED in its DEBUG REPORT', () => {
     const early = (lines: string[], skill: string) => check(lines, skill);
     const nothing = early([slash('review'), say('Nothing to review — no changes against the base branch.')], 'review');
     expect(nothing).toMatchObject({ met: true, follow: true, missing: [] });
     expect(nothing.items[0].detail).toBe('the skill ended the run early (Nothing to review)');
     expect(early([slash('review'), say('Base branch could not be found.\nSTATUS: BLOCKED')], 'review').met).toBe(true);
     const blockedReport = DEBUG_REPORT.replace('Status:          DONE', 'Status:          BLOCKED');
-    expect(early([...J1_TRANSCRIPT.slice(0, -1), say(blockedReport)], 'verify')).toMatchObject({ met: true, statusLine: 'BLOCKED' });
-    expect(early([...J1_TRANSCRIPT.slice(0, -1), say(DEBUG_REPORT)], 'verify').missing).toEqual([]);
+    expect(early([...J1_TRANSCRIPT.slice(0, -1), say(blockedReport)], 'build-check')).toMatchObject({ met: true, statusLine: 'BLOCKED' });
+    expect(early([...J1_TRANSCRIPT.slice(0, -1), say(DEBUG_REPORT)], 'build-check').missing).toEqual([]);
     expect(early([slash('review'), say('I would print STATUS: BLOCKED if the base were missing, but it is here. Done.')], 'review').met).toBe(false);
     expect(early([slash('review'), say('Nothing to review under docs/; checking lib/ next.'), say('Done.')], 'review').met).toBe(false);
-    expect(early([...J1_TRANSCRIPT.slice(0, -1), say('There is nothing to review in the docs folder. Fixed it.')], 'verify').met).toBe(false);
+    expect(early([...J1_TRANSCRIPT.slice(0, -1), say('There is nothing to review in the docs folder. Fixed it.')], 'build-check').met).toBe(false);
   });
 
   test('a Read of a SKILL.md counts as a load only under a skills/ directory, not in a gstack checkout', () => {
     const loads = (file_path: string) => skillLoads(parseTranscript(tool('r', 'Read', { file_path }))).map(l => l.skill);
-    expect(loads('/home/u/.claude/skills/gstack/verify/SKILL.md')).toEqual(['verify']);
+    expect(loads('/home/u/.claude/skills/gstack/build-check/SKILL.md')).toEqual(['build-check']);
     expect(loads('C:\\Users\\u\\.claude\\skills\\review\\SKILL.md')).toEqual(['review']);
     expect(loads('/home/u/src/gstack/review/SKILL.md')).toEqual([]);
   });
@@ -223,12 +231,12 @@ describe('checkContract is a pure function of the transcript', () => {
   });
 
   test('loadLine checks one earlier run, bounded by the next load of the same skill', () => {
-    const lines = [...J1_TRANSCRIPT, tool('b', 'Bash', { command: 'bun test' }), result('b', 'ok'), say(DEBUG_REPORT), user('another bug'), tool('s2', 'Skill', { skill: 'verify' }), tool('e9', 'Edit', { file_path: 'x' })];
+    const lines = [...J1_TRANSCRIPT, tool('b', 'Bash', { command: 'bun test' }), result('b', 'ok'), say(DEBUG_REPORT), user('another bug'), tool('s2', 'Skill', { skill: 'build-check' }), tool('e9', 'Edit', { file_path: 'x' })];
     const t = parseTranscript(lines.join('\n'));
     const [first, second] = skillLoads(t);
-    expect(checkContract(t, 'verify', contractOf('verify'), { loadLine: first.line })).toMatchObject({ met: true, load: { line: first.line } });
-    expect(checkContract(t, 'verify', contractOf('verify'))).toMatchObject({ met: false, load: { line: second.line } });
-    expect(checkContract(t, 'verify', contractOf('verify'), { loadLine: 999 }).load).toBeNull();
+    expect(checkContract(t, 'build-check', contractOf('build-check'), { loadLine: first.line })).toMatchObject({ met: true, load: { line: first.line } });
+    expect(checkContract(t, 'build-check', contractOf('build-check'))).toMatchObject({ met: false, load: { line: second.line } });
+    expect(checkContract(t, 'build-check', contractOf('build-check'), { loadLine: 999 }).load).toBeNull();
   });
 });
 
@@ -243,18 +251,18 @@ describe('gstack-skill-contract CLI', () => {
   };
 
   test('check: exit 0 met, 1 unmet (with the block text), --json carries the items', () => {
-    const met = cli('check', '--transcript', write(INTERACTIVE_TURNS.flat()), '--skill', 'verify');
+    const met = cli('check', '--transcript', write(INTERACTIVE_TURNS.flat()), '--skill', 'build-check');
     expect(met.code).toBe(EXIT.MET);
-    expect(met.stdout).toStartWith('SKILL_CONTRACT_MET verify (contract v1)');
-    const unmet = cli('check', '--transcript', write(J1_TRANSCRIPT), '--skill', 'verify', '--json');
+    expect(met.stdout).toStartWith('SKILL_CONTRACT_MET build-check (contract v1)');
+    const unmet = cli('check', '--transcript', write(J1_TRANSCRIPT), '--skill', 'build-check', '--json');
     expect(unmet.code).toBe(EXIT.UNMET);
-    expect(JSON.parse(unmet.stdout)).toMatchObject({ exit: 1, skill: 'verify', missing: ['debug-report'], follow: false });
+    expect(JSON.parse(unmet.stdout)).toMatchObject({ exit: 1, skill: 'build-check', missing: ['debug-report'], follow: false });
   });
 
   test('check: a contract that still lists the removed kind warns once on stderr and checks the rest', () => {
     const file = path.join(work, 'SKILL.md');
-    fs.writeFileSync(file, SKILLS.verify.replace('      labels: [Symptom, Root cause, Fix, Evidence]\n', '      labels: [Symptom, Root cause, Fix, Evidence]\n    - id: repro-after-fix\n      kind: check_after_last_edit\n'));
-    const r = cli('check', '--transcript', write(J1_TRANSCRIPT), '--skill', 'verify', '--skill-file', file, '--json');
+    fs.writeFileSync(file, SKILLS["build-check"].replace('      labels: [Symptom, Root cause, Fix, Evidence]\n', '      labels: [Symptom, Root cause, Fix, Evidence]\n    - id: repro-after-fix\n      kind: check_after_last_edit\n'));
+    const r = cli('check', '--transcript', write(J1_TRANSCRIPT), '--skill', 'build-check', '--skill-file', file, '--json');
     expect(r.code).toBe(EXIT.UNMET);
     expect(JSON.parse(r.stdout)).toMatchObject({ missing: ['debug-report'] });
     expect(r.stderr).toBe(`gstack-skill-contract: SKILL_CONTRACT_SKIPPED ${file}: repro-after-fix: kind check_after_last_edit was removed from gstack, so this item is not checked; delete it from the contract
@@ -262,10 +270,10 @@ describe('gstack-skill-contract CLI', () => {
   });
 
   test('check: stable error exits 2, 3, 4, 5, 6', () => {
-    expect(cli('check', '--skill', 'verify').code).toBe(EXIT.USAGE);
-    expect(cli('check', '--transcript', path.join(work, 'none.jsonl'), '--skill', 'verify')).toMatchObject({ code: EXIT.STATE_ERROR });
-    expect(cli('check', '--transcript', write(['{"x":1}']), '--skill', 'verify').stderr).toStartWith('SKILL_CONTRACT_UNKNOWN_SHAPE');
-    expect(cli('check', '--transcript', write(['{"x":1}']), '--skill', 'verify').code).toBe(EXIT.UNKNOWN_SHAPE);
+    expect(cli('check', '--skill', 'build-check').code).toBe(EXIT.USAGE);
+    expect(cli('check', '--transcript', path.join(work, 'none.jsonl'), '--skill', 'build-check')).toMatchObject({ code: EXIT.STATE_ERROR });
+    expect(cli('check', '--transcript', write(['{"x":1}']), '--skill', 'build-check').stderr).toStartWith('SKILL_CONTRACT_UNKNOWN_SHAPE');
+    expect(cli('check', '--transcript', write(['{"x":1}']), '--skill', 'build-check').code).toBe(EXIT.UNKNOWN_SHAPE);
     expect(cli('check', '--transcript', write(J1_TRANSCRIPT), '--skill', 'qa').code).toBe(EXIT.NO_CONTRACT);
     expect(cli('check', '--transcript', write(J1_TRANSCRIPT), '--skill', 'review').code).toBe(EXIT.NOT_LOADED);
     const file = path.join(work, 'SKILL.md');
@@ -274,12 +282,12 @@ describe('gstack-skill-contract CLI', () => {
   });
 
   test('waive is stateless: validates and acknowledges, writes nothing', () => {
-    const ok = cli('waive', 'debug-report', '--reason', 'docs-only change', '--skill', 'verify');
-    expect(ok).toEqual({ code: 0, stdout: 'SKILL_CONTRACT_WAIVED debug-report (verify): docs-only change (this session only; counted as a miss for follow)\n', stderr: '' });
+    const ok = cli('waive', 'debug-report', '--reason', 'docs-only change', '--skill', 'build-check');
+    expect(ok).toEqual({ code: 0, stdout: 'SKILL_CONTRACT_WAIVED debug-report (build-check): docs-only change (this session only; counted as a miss for follow)\n', stderr: '' });
     expect(fs.readdirSync(state)).toEqual([]);
     expect(cli('waive', 'debug-report').code).toBe(EXIT.USAGE);
     expect(cli('waive', 'Not An Id', '--reason', 'x').code).toBe(EXIT.USAGE);
-    expect(cli('waive', 'nope', '--reason', 'x', '--skill', 'verify').code).toBe(EXIT.USAGE);
+    expect(cli('waive', 'nope', '--reason', 'x', '--skill', 'build-check').code).toBe(EXIT.USAGE);
   });
 
   test('report lists misses from the records, re-checking a blocked run that was fixed afterwards', () => {
@@ -294,7 +302,7 @@ describe('gstack-skill-contract CLI', () => {
     const rep = JSON.parse(r.stdout);
     expect(rep.runs).toBe(2);
     expect(rep.misses.map((m: any) => [m.session, m.outcome])).toEqual([['s-missed', 'miss']]);
-    expect(rep.items).toEqual([{ skill: 'verify', item: 'debug-report', misses: 1 }]);
+    expect(rep.items).toEqual([{ skill: 'build-check', item: 'debug-report', misses: 1 }]);
     expect(cli('report').stdout).toStartWith('SKILL_CONTRACT_REPORT runs=2 misses=1');
   });
 
@@ -303,11 +311,11 @@ describe('gstack-skill-contract CLI', () => {
     const file = write(J1_TRANSCRIPT, 'again.jsonl');
     expect(JSON.parse(runHook(CONTRACT_HOOK, JSON.stringify({ session_id: 's-again', transcript_path: file, stop_hook_active: false }), env).stdout).decision).toBe('block');
     fs.appendFileSync(file, [tool('b', 'Bash', { command: 'bun test' }), result('b', 'ok'), say(DEBUG_REPORT),
-      user('one more bug'), tool('s2', 'Skill', { skill: 'verify' }), say(DEBUG_REPORT)].join('\n') + '\n');
+      user('one more bug'), tool('s2', 'Skill', { skill: 'build-check' }), say(DEBUG_REPORT)].join('\n') + '\n');
     expect(JSON.parse(cli('report', '--json').stdout).misses).toEqual([]);
   });
 
   test('installed contracts are read from SKILL.md frontmatter', () => {
-    expect(readFrontmatter(path.join(skills, 'verify', 'SKILL.md'))).toContain('contract:');
+    expect(readFrontmatter(path.join(skills, 'build-check', 'SKILL.md'))).toContain('contract:');
   });
 });

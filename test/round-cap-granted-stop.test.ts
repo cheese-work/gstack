@@ -62,8 +62,9 @@ describe('the plan: a fix-check grant answering a stop buys its fix round (GST-2
     const n = nextStep({ fullPasses: 1, last: 'full', priorFull: 2, roundGrant: 'a-2', fixedBlocking: true, rangeRuntimeLines: 500 } as any, 'full');
     expect(['full', 'scoped', 'fix-check']).toContain(n.step);
   });
-  test('G4 (guard): the owner\'s in-run loop grant after a round-2 full pass still plans its one fix-check', () => {
-    expect(nextStep({ fullPasses: 2, last: 'full', fixedBlocking: true, granted: 'a-3' } as any).step).toBe('fix-check');
+  test('G4 (guard): an in-run loop grant after a round-2 full pass buys no fix-check: the fix gets the read-only full review (GST-3562 A); after a round-2 fix-check it still plans its one fix-check', () => {
+    expect(nextStep({ fullPasses: 2, last: 'full', fixedBlocking: true, granted: 'a-3' } as any)).toMatchObject({ step: 'full', reason: expect.stringContaining('read-only final review (R51)') });
+    expect(nextStep({ fullPasses: 1, last: 'fix-check', fixedBlocking: true, fixChecks: 1, granted: 'a-3' } as any).step).toBe('fix-check');
   });
 });
 
@@ -109,10 +110,12 @@ describe('which grant answers which stop (lib/pr-review-history.ts grantedStop)'
     expect(answer(body, [fixGrant('a-000000000001')])).toMatchObject({ ok: false });
     expect(prReviewHistory(stopped())).toMatchObject({ full: 3, rounds: 3, stubs: 2, heads: 2 });
   });
-  test('a fix-check row that lacks its stop, or an extra-round row naming one, is no grant', () => {
+  test('a fix-check row with no stop answers its own head and no stop record (GST-3546); an extra-round row naming a stop is no grant', () => {
     const bare = row('a-000000000004', { scope: 'review_round_grant ' + S + ' pr=7 kind=fix-check', ask: 'review_round_grant fix-check at ' + S + ' for pr 7: x' });
     const extra = row('a-000000000005', { scope: 'review_round_grant ' + S + ' pr=7 kind=extra-round stop=ro findings=f#1', ask: 'review_round_grant extra-round at ' + S + ' for pr 7: x' });
-    expect(reviewRoundGrants([bare, extra])).toEqual([]);
+    expect(reviewRoundGrants([bare, extra])).toEqual([expect.objectContaining({ kind: 'fix-check', head: S, pr: 7, approval: 'a-000000000004', findings: [] })]);
+    expect(reviewRoundGrants([bare])[0]!.stop_run).toBeUndefined();
+    expect(answer(placeRunEntry(stopped(), grantMarker({ head: S, run: 'fc1', grant: 'a-000000000004' })), [bare])).toMatchObject({ ok: false });
   });
 });
 
@@ -129,16 +132,17 @@ describe('the stop record binds only a review gstack can tie to one commit (stop
     expect(from([{ ...bound, completed: false }]).ok).toBe(false);
     expect(from([{ ...bound, commit_full: H }]).ok).toBe(false);
   });
-  test('S5: a non-ship row or a fix-check row is not the stopping review; an earlier run\'s row is out of range', () => {
+  test('S5: a non-ship row is not the stopping review; a later fix-check row is, and must bind (#4591); an earlier run\'s row is out of range', () => {
     expect(from([bound, { ...bound, via: 'manual', commit_full: H }])).toMatchObject({ ok: true, head: S });
-    expect(from([bound, { ...bound, skill: 'review-fix-check', commit_full: H }])).toMatchObject({ ok: true, head: S });
+    expect(from([bound, { ...bound, skill: 'review-fix-check', commit_full: H }]).ok).toBe(false);
+    expect(from([{ ...bound, commit_full: H }, { ...bound, skill: 'review-fix-check' }])).toMatchObject({ ok: true, head: S });
     expect(from([{ ...bound, timestamp: '2026-11-17T00:00:00Z' }]).ok).toBe(false);
   });
 });
 
 /** A fixture repository at the stop head with a PR body file, and the bins run against it. */
-function stopRepo() {
-  const f = shipFixture({ 'src/x.ts': 'export const x = 1;\n' }, { 'src/x.ts': 'export const x = 2;\n' });
+function stopRepo(base: Record<string, string> = {}, branch: Record<string, string> = {}) {
+  const f = shipFixture({ 'src/x.ts': 'export const x = 1;\n', ...base }, { 'src/x.ts': 'export const x = 2;\n', ...branch });
   fxs.push(f);
   const run = (bin: string, args: string[]) => f.run(path.join(BIN, bin), args, { GSTACK_APPROVALS_MIRROR: '0' });
   const head = () => f.git('rev-parse', 'HEAD').stdout.trim();
@@ -155,9 +159,28 @@ describe('the CLI seams', () => {
     const ok = r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s.slice(0, 10), '--kind', 'fix-check', '--stop-run', 'ro', '--findings', 'p1/outside-voice#1,p1/red-team#2', '--reason', 'fixable blocker', '--by', 'Captain GStack Minder (GSTA-36)']);
     expect(ok.status, ok.stderr).toBe(0);
     expect(r.run('gstack-approvals', ['list', '--json']).stdout).toContain('review_round_grant ' + s + ' pr=7 kind=fix-check stop=ro findings=p1/outside-voice#1,p1/red-team#2');
-    expect(r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'fix-check', '--reason', 'x', '--by', 'Captain GStack Minder']).status).toBe(2);
+    expect(r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'fix-check', '--stop-run', 'ro', '--reason', 'x', '--by', 'Captain GStack Minder']).status).toBe(2);
+    expect(r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'fix-check', '--findings', 'f#1', '--reason', 'x', '--by', 'Captain GStack Minder']).status).toBe(2);
     expect(r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'extra-round', '--stop-run', 'ro', '--findings', 'f#1', '--reason', 'x', '--by', 'Captain GStack Minder']).status).toBe(2);
     expect(r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'fix-check', '--stop-run', 'ro', '--findings', 'f#1', '--reason', 'x', '--by', 'gstack']).status).toBe(2);
+  });
+
+  // Value: protects=a Captain's fix-check grant can be recorded on the /ship machine while the stopped run's marker is still there,
+  //   as a relay naming the Captain's message, and never as an unrelayed row inside the run; fails_when=round-grant refuses the relay
+  //   (APPROVAL_RECORD_INVALID, #4531) or accepts an unrelayed grant inside an open run; why_new=#4531's fix-check grant could not be
+  //   recorded; seam=gstack-approvals round-grant; no_claim=-
+  test('#4531: inside an open /ship run a grant records only as a relay with --owner-ref and --words', () => {
+    const r = stopRepo();
+    const s = r.head();
+    fs.writeFileSync(path.resolve(r.f.work, r.f.git('rev-parse', '--git-path', 'gstack-ship-run').stdout.trim()), 'ro\n');
+    const grant = (extra: string[]) => r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'fix-check', '--stop-run', 'ro', '--findings', 'p1/red-team#2', '--reason', 'fixable blocker', '--by', 'Captain GStack Minder (GSTA-36)', ...extra]);
+    const bare = grant([]);
+    expect([bare.status, bare.stderr]).toEqual([2, expect.stringContaining('/ship run ro is open on this checkout')]);
+    expect(grant(['--owner-ref', 'GSTA-36:2026-11-19T12:29:59Z']).status).toBe(2);
+    expect(grant(['--owner-ref', 'not a ref', '--words', 'one fix-check']).status).toBe(2);
+    const relayed = grant(['--owner-ref', 'GSTA-36:2026-11-19T12:29:59Z', '--words', 'one fix-check for red-team#2']);
+    expect(relayed.status, relayed.stderr).toBe(0);
+    expect(r.run('gstack-approvals', ['list', '--json']).stdout).toContain('relayed:GSTA-36:2026-11-19T12:29:59Z');
   });
 
   // Value: protects=GST-2968's own shape end to end: the read-only run stops, the stop is recorded, a fix-check grant is recorded after
@@ -191,6 +214,23 @@ describe('the CLI seams', () => {
     expect(twice.status).toBe(3);
     expect(twice.stderr).toContain('(GRANT_SPENT)');
     expect(r.run('gstack-ship-receipt', ['history', '--body', r.body, '--pr', '7', '--base', 'main', '--run', 'fc2']).stdout).toContain('PR_REVIEW_GRANT: not applied (grant ' + g + ' was claimed by run fc1');
+  });
+
+  // Value: protects=FOUN-505, a granted stop whose fix is one string in a data .json (named by code or not) reads its fix range and plans
+  //   the fix-check; fails_when=gstack-diff-scope calls the range unmatched, FIX_RANGE prints unread and the plan stops with no fix to
+  //   read; seam=gstack-diff-scope, gstack-review-plan's fix range, classifyDiff's data rows
+  test('a data-only fix after a granted stop is read (runtime 0) and plans the fix-check (FOUN-505)', () => {
+    for (const named of [false, true]) {
+      const labels = '{"label": "pass"}\n';
+      const r = stopRepo({ 'data/labels.json': labels }, named ? { 'src/x.ts': "export const x = 2; // reads labels.json\n" } : {});
+      const s = r.head();
+      const g = grantId(r.run('gstack-approvals', ['round-grant', '--pr', '7', '--head', s, '--kind', 'fix-check', '--stop-run', 'ro', '--findings', 'f#1', '--reason', 'x', '--by', 'Captain GStack Minder']).stdout)!;
+      r.f.write({ 'data/labels.json': '{"label": "fail"}\n' }); r.f.commit('fix the label');
+      const plan = r.run('gstack-review-plan', ['--base', 'main', '--gate-tagged', '0', '--prior-rounds', '3', '--prior-full', '3', '--pr', '7', '--round-grant', g, '--stop', s]);
+      expect(plan.status, plan.stderr).toBe(0);
+      expect(plan.stdout).not.toContain('unread');
+      expect(plan.stdout).toContain('next=fix-check');
+    }
   });
 
   test('X15/G7: the plan refuses a fix-check grant for another stop head and an extra-round grant with --stop, and plans no fix-check without a fix', () => {

@@ -61,7 +61,7 @@ characters, the part of a description Hermes's skills index shows.
 
 | Harness | What gstack registers | Install | Verify | Remove |
 |---|---|---|---|---|
-| OpenClaw | default `--skills hybrid`: `gstack-review`, `gstack-qa`, `gstack-ship` and `gstack-plan-eng-review` as top-level skills plus one `gstack` router skill whose body lists every other skill and its path, in `${OPENCLAW_STATE_DIR:-~/.openclaw}/skills`. With OpenClaw 2026.10.6's 19 eligible bundled skills, hybrid's skills section stays in full format under its 18,000-character budget; `--skills all` (17,971, compact format, descriptions cut) lists every skill as its own folder, `--skills router` (6,701) only the router. OpenClaw serves a registered skill's `SKILL.md` whole or refuses it ("Skill instructions cannot be partially served"), at most 32,768 bytes when its model catalog has no context window for the model and 32,000 characters with a 100K-200K-token window, so any registered skill over 32,000 bytes (review, ship and plan-eng-review among the four task skills in hybrid, 26 of 63 in `all` today) is a short entry `SKILL.md` with the same name and description that sends the agent to its full `SKILL.md` in a plain copy of every skill (the router's `gstack/skills/`, or `.gstack-skills/` under `--skills all`, a folder OpenClaw's skill scan skips), which OpenClaw reads in pages. A context window under 100K tokens lowers that budget to 16,000 characters, which this limit does not cover | `./setup --host openclaw`, or `./setup` inside OpenClaw | `openclaw skills list --json` shows `gstack` and the four task skills (source `openclaw-managed`, eligible) | `gstack-harness unregister openclaw` |
+| OpenClaw | default `--skills hybrid`: `gstack-review`, `gstack-qa`, `gstack-ship` and `gstack-plan-eng-review` as top-level skills plus one `gstack` router skill whose body lists every other skill and its path, in `${OPENCLAW_STATE_DIR:-~/.openclaw}/skills`. With OpenClaw 2026.10.6's 19 eligible bundled skills, hybrid's skills section stays in full format under its 18,000-character budget; `--skills all` (17,971, compact format, descriptions cut) lists every skill as its own folder, `--skills router` (6,701) only the router. OpenClaw serves a registered skill's `SKILL.md` whole or refuses it ("Skill instructions cannot be partially served"), at most 32,768 bytes when its model catalog has no context window for the model and 32,000 characters with a 100K-200K-token window, so any registered skill over 32,000 bytes (review, ship and plan-eng-review among the four task skills in hybrid, 26 of 63 in `all` today) is a short entry `SKILL.md` with the same name and description that sends the agent to its full `SKILL.md` in a plain copy of every skill (the router's `gstack/skills/`, or `.gstack-skills/` under `--skills all`, a folder OpenClaw's skill scan skips), which OpenClaw reads in pages. A context window under 100K tokens lowers that budget to 16,000 characters, which this limit does not cover | `./setup --host openclaw`, or `./setup` inside OpenClaw | `openclaw skills list --json` shows `gstack` and the four task skills (source `openclaw-managed`, eligible); with several agents and explicit ownership, run it inside an agent's workspace or add `--agent <id>`, and `gstack-harness status` reports `unknown` with OpenClaw's error when the unscoped list fails | `gstack-harness unregister openclaw` |
 | Hermes | every skill, as `gstack-<skill>` in one `gstack` category, in `${HERMES_HOME:-~/.hermes}/skills/gstack`. Hermes's skills index lists only skills registered as folders, so a router would leave the rest out of the listing (`skill_view` still loads an unlisted skill by name, but nothing tells the model it exists) | `./setup --host hermes`, or `./setup` inside Hermes | `hermes skills list` shows the `gstack-*` skills in category `gstack` | `gstack-harness unregister hermes` |
 | dots (feder-cr) | the `gstack` router in `/home/dot/skills/gstack`, which the Dot lists every turn | `./setup` on the Dot's computer, or `gstack-harness register dots` | the Dot's Skills page, or `GET /skills` | `gstack-harness unregister dots` |
 | QM | one skill (`gstack-plan`) in QM's own skill format, from `qm/sandbox/skills/` ([qm/README.md](../qm/README.md)). `gstack-harness register qm --yes` still stops before sending anything: QM imports a skill pack by cloning the whole repository and caps it at 32 MiB and 5,000 files, and gstack's repository is about 73 MiB ([why](troubleshooting.md#harness-qm-pack-too-large)) | copy `qm/sandbox/skills/gstack-*` into `<deploy dir>/sandbox/skills/` and run `qm up` | ask it for a gstack skill | remove the folders and run `qm up` again |
@@ -167,7 +167,7 @@ after you approve); ask for `gstack-office-hours`, or list them with
 Codex skills in `.agents/skills` (the workspace tier wins), and workspace skills
 load only in trusted folders (`/trust`).
 
-Outside reviews require the selected CLI to be installed and authenticated: Claude Code when using gstack in Codex, or Codex on other harnesses. External harnesses discover these commands as `/gstack-claude-code` and `/gstack-codex`; each harness omits its own wrapper. Explicit provider requests keep that provider. The existing `codex_reviews` setting controls automatic outside reviews where supported, regardless of the provider selected.
+Outside reviews require the selected CLI to be installed and authenticated: Claude Code when using gstack in Codex, or Codex on other harnesses. External harnesses discover these commands as `/gstack-claude-code` and `/gstack-codex` (Codex lists its one as `claude-code`: mention it as `$claude-code`); each harness omits its own wrapper. Explicit provider requests keep that provider. The existing `codex_reviews` setting controls automatic outside reviews where supported, regardless of the provider selected.
 
 `/claude` has been renamed to `/claude-code`. Re-run `./setup --host <name>` to migrate managed installations, including other harnesses sharing the checkout. Setup preserves the previous installation if replacement generation or installation fails and prints repair instructions.
 
@@ -196,6 +196,14 @@ override applies to that run only; set `model` in your Codex `config.toml` to
 make it stick across upgrades. After changing your Codex model, rerun
 `./setup --host codex` to regenerate the skills.
 
+**Reasoning effort and hooks.** gstack's workflows do best at high reasoning
+effort; setup never changes it, so start Codex with
+`codex -c model_reasoning_effort=high` when you run them. With Codex 0.170 or
+newer, setup also adds gstack's routing hook and destructive-command check to
+`${CODEX_HOME:-~/.codex}/hooks.json`, and Codex runs them once you trust them at
+its startup prompt or in `/hooks`: see
+[Codex hooks](skill-routing-and-contracts.md#codex).
+
 **Plan-review and implementation tiers.** Plan workflows use an independent
 `frontier` reviewer: Fable 5.1 from Codex, or GPT-6 Astra from Claude Code.
 Implementation handoffs recommend the `smart` tier: Opus 5.5 or GPT-6.1 Sol.
@@ -218,7 +226,7 @@ repair message and reports the outside review as unavailable. It never silently
 switches to its default. Nested Codex reviews also run with installed skills
 hidden (`-c skills.include_instructions=false`), so a review cannot turn into a
 whole nested skill run. Runtime model selection is separate from the setup-time
-behavioral profile above. Without the plan-review role, `/claude-code` (`gstack-claude-code`
+behavioral profile above. Without the plan-review role, `/claude-code` (`$claude-code`
 on Codex) preserves Claude's configured model. Set `GSTACK_CLAUDE_MODEL=<model>`
 or name a model in your request to override it for the invocation, including
 resumed consultations. See [eval defaults and overrides](../CONTRIBUTING.md#testing--evals)

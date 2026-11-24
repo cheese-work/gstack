@@ -2,10 +2,10 @@
 name: ship
 description: |
   Ship it: merge the base, run tests, review the diff, bump VERSION and CHANGELOG,
-  push and create a PR. Use when asked to "ship", "deploy", "deploy this",
-  "push to main", "create a PR", "merge and push", or "get it deployed".
+  push and create a PR. Use when asked to "ship", "ship it", "push to main",
+  "create a PR" or "open a pull request". Deploying is /land-and-deploy.
   Proactively invoke this skill (do NOT push/PR directly) when the user says code
-  is ready, asks about deploying, wants to push code up, or asks to create a PR. (gstack)
+  is ready, wants to push code up, or asks to create a PR. (gstack)
 ---
 <!-- AUTO-GENERATED from SKILL.md.tmpl — do not edit directly -->
 <!-- Regenerate: bun run gen:skill-docs -->
@@ -148,7 +148,8 @@ Some steps require action on a site the user controls: registering an API key, c
        125) echo "ASIDE_UNAVAILABLE: bounded probe unavailable" ;;
        0) if printf '%s\n' "$_o" | grep -q '^ASIDE_READY '; then echo "READY: $_A"
           else echo "ASIDE_NOT_RUNNING: no readiness marker"; fi ;;
-       *) echo "ASIDE_CLI_ERROR: exit $_rc; inspect aside --help locally" ;;
+       *) case "$_o" in *"isn't running"*) echo "ASIDE_NOT_RUNNING: app not running" ;;
+          *) echo "ASIDE_CLI_ERROR: exit $_rc; inspect aside --help locally" ;; esac ;;
      esac
      unset _o
    fi
@@ -209,9 +210,9 @@ compare two with `git diff <old-tree> <new-tree>`.
 **Review policy** (docs/review-policy.md): only a finding that would fail a test,
 break production, or lose data or secrets blocks a pass; the rest is a PR-body
 note. Step 9's plan sets both reviews' depth (`--depth-floor standard|full` only
-raises it). Pass 1 reads the diff, later passes the range; the cap is two rounds under `frozen`
-(fix-checks included), else Step 9.4's third fix cycle. `NO FINDINGS` is complete. `ship: review_scope` (Step 3)
-is the knob; the receipt's `review_loop` records the outcome.
+raises it). Pass 1 reads the diff, later passes the range; the cap is two rounds per PR under `frozen`
+(then a read-only review if code changed), else Step 9.4's third fix cycle. `NO FINDINGS` is complete. `ship: review_scope` (Step 3)
+is the knob.
 
 ### Ship control flow
 
@@ -499,18 +500,18 @@ repeat Step 2 (decisions included) on the merged content, then Step 4.
    none after `ADVERSARIAL: skipped`). Match each to its saved
    handle, original token and source; reject outside-provider or older records.
 2. **Compare their content.** All three snapshots must match: the native record's
-   `wtree` (its `review_binding.state` `verified`), the Step 9 record's
-   `review_binding.start_wtree` and `review_binding.end_wtree`; after a planned skip, the
-   last two with `review_freshness` `CURRENT`. A mismatch or a missing required
-   record/field blocks release preparation: report **Review records missing or mismatched**
-   and insert `9 → 10 → 11 → 11.5` before Step 12. Bind the new records at 11.5.
-   Never attach new tokens to old work.
+   `wtree` (`review_binding.state` `verified`; `end_wtree` if `ruled_notes` read
+   `CURRENT`), the Step 9 record's `review_binding.start_wtree` and
+   `review_binding.end_wtree`; after a planned skip, the last two with
+   `review_freshness` `CURRENT`. A mismatch or missing record/field blocks release:
+   report **Review records missing or mismatched** and insert `9 → 10 → 11 → 11.5`
+   before Step 12. Bind new records at 11.5. Never attach new tokens to old work.
 3. **Preserve any QA exception.** A named probe-risk exception may leave Step 9.4's
    root `wtree` absent; item 2 still compares its start/end snapshots. Matching content
    does not mean failed or unrun probes passed. Keep Step 9.4's incomplete flags
    and the user's exception.
 4. **Save the evidence.** Save both records and matching **reviewed tree** for
-   Step 16, with its merge base. Continue to Step 12.
+   Step 16, with its merge base.
 
 ## Step 12: Version bump (auto-decide)
 

@@ -1,6 +1,6 @@
 # gstack
 
-gstack turns Claude Code (and other coding agents) into a virtual engineering team: a CEO who rethinks the product, an eng manager who locks architecture, a designer who catches AI slop, a reviewer who finds production bugs, a QA lead who opens a real browser, a security officer who runs OWASP + STRIDE audits, and a release engineer who ships the PR. All slash commands, all Markdown, all free, MIT license.
+gstack turns Claude Code (and other coding agents) into a virtual engineering team: a CEO who rethinks the product, an eng manager who locks architecture, a designer who catches AI slop, a reviewer who looks for production bugs, a QA lead who opens a real browser, a security officer who runs OWASP + STRIDE audits, and a release engineer who ships the PR. All slash commands, all Markdown, all free, MIT license.
 
 I'm [Garry Tan](https://x.com/garrytan), President & CEO of [Y Combinator](https://www.ycombinator.com/). This is the open source software factory I use every day, and I'm sharing it because these tools should be available to everyone. The story, the productivity numbers and how I run ten sprints at once are in [Why gstack](docs/why-gstack.md).
 
@@ -14,15 +14,17 @@ Fork it. Improve it. Make it yours. And if you want to hate on free open source 
 ## What gstack is for
 
 - **A whole team's judgment for one builder.** Product, design, engineering, QA, security and release reviews, each from a specialist role.
-- **Catch what CI misses.** Find the bugs that pass tests but break in production, before they ship.
-- **AI-written changes you can trust.** Every change carries its tests, its review and the evidence for both, so you can merge without rereading every line.
+- **A second look before you merge.** `/review` reads your diff for the kinds of bugs tests tend to miss, like race conditions, N+1 queries and broken trust boundaries.
+- **The evidence on every PR.** `/ship` puts the tests it ran, the review and their results on the pull request, so you can see what was checked before you merge.
 - **Free, open and portable.** MIT-licensed, and it runs on Claude Code and the other major coding agents.
+
+**What it doesn't do: make your agent fix more bugs.** In a November 2026 test on 100 everyday GitHub bugs and features, Claude Opus 5.5 fixed 58 with gstack installed and 61 of 99 without it (one task didn't score). So gstack gave no gain, and the test rules out a gain bigger than about 2 points on those tasks. On 60 security fixes, both fixed 29. Use gstack for the workflow, the reviews, the shipping steps and the safety guards, not for a higher fix rate. ([Results](https://github.com/garrytan/gstack-evals/blob/main/wiki/board/2026-11-19-geva-540-skill-pack-h2h-results/README.md), read with [its correction](https://github.com/garrytan/gstack-evals/blob/main/wiki/board/2026-11-20-geva-565-skill-pack-h2h-correction/README.md).)
 
 ## Quick start
 
 1. Install gstack (two pastes, about 30 seconds of setup; see below).
 2. Run `/office-hours` and describe what you're building. It pushes back on your framing and writes a design doc the other skills read.
-3. Run `/review` on any branch with changes. It finds the bugs that pass CI but break in production, and fixes the obvious ones.
+3. Run `/review` on any branch with changes. It reads the diff for bugs that tests tend to miss, fixes the obvious ones and asks you about the rest.
 4. Run `/qa` on your staging URL, or on an isolated local API, CLI, job or webhook. It opens a real browser, reproduces bugs and fixes them.
 
 Stop there. You'll know if this is for you. When you want the whole sprint, `/autoplan` reviews a plan end to end and `/ship` runs tests, review and the PR.
@@ -79,7 +81,7 @@ installs and passes the conformance tests but has no certification run yet;
 | Agent | Tier | Install | First invocation | Safety skills | Outside review needs | Repair |
 |-------|------|---------|------------------|---------------|----------------------|--------|
 | Claude Code | full | `--host claude` (default) | `/office-hours` | enforced (hooks block) | Codex CLI, signed in | `./setup --host claude` |
-| OpenAI Codex CLI | experimental | `--host codex` → `${CODEX_HOME:-~/.codex}/skills/gstack-*/` | ask for `gstack-office-hours` | advisory, not blocked | Claude Code CLI, signed in | `./setup --host codex` |
+| OpenAI Codex CLI | experimental | `--host codex` → `${CODEX_HOME:-~/.codex}/skills/gstack-*/` | `$office-hours` | destructive commands blocked once you trust gstack's hooks ([Codex hooks](docs/skill-routing-and-contracts.md#codex)); the rest advisory | Claude Code CLI, signed in | `./setup --host codex` |
 | OpenCode | experimental | `--host opencode` → `~/.config/opencode/skills/gstack-*/` + `/gstack-*` commands | `/gstack-office-hours` | advisory, not blocked | Codex CLI, signed in | `./setup --host opencode` |
 | Cursor | experimental | `--host cursor` → `~/.cursor/skills/gstack-*/` | ask for `gstack-office-hours` | advisory, not blocked | Codex CLI, signed in | `./setup --host cursor` |
 | Factory Droid | experimental | `--host factory` → `~/.factory/skills/gstack-*/` | ask for `gstack-office-hours` | advisory, not blocked | Codex CLI, signed in | `./setup --host factory` |
@@ -143,7 +145,7 @@ gstack is a process, not a collection of tools. The skills run in the order a sp
 
 **Think → Plan → Build → Review → Test → Ship → Reflect**
 
-Each skill feeds into the next. `/office-hours` writes a design doc that `/plan-ceo-review` reads. `/plan-eng-review` writes a test plan that `/qa` picks up. `/review` catches bugs that `/ship` verifies are fixed. Nothing falls through the cracks because every step knows what came before it.
+Each skill feeds into the next. `/office-hours` writes a design doc that `/plan-ceo-review` reads. `/plan-eng-review` writes a test plan that `/qa` picks up. `/review` records findings that `/ship` checks are resolved before the PR. Each step reads what the step before it wrote.
 
 | Skill | Your specialist | What they do |
 |-------|----------------|--------------|
@@ -153,11 +155,11 @@ Each skill feeds into the next. `/office-hours` writes a design doc that `/plan-
 | `/plan-design-review` | **Senior Designer** | Rates each design dimension 0-10, explains what a 10 looks like, then edits the plan to get there. AI Slop detection. Interactive — one AskUserQuestion per design choice. |
 | `/plan-devex-review` | **Developer Experience Lead** | Interactive DX review: explores developer personas, benchmarks against competitors' TTHW, designs your magical moment, traces friction points step by step. Scores error messages for the agents that read them ([agent-ready errors](docs/agent-ready-errors.md)). Three modes: DX EXPANSION, DX POLISH, DX TRIAGE. 20-45 forcing questions. |
 | `/design-consultation` | **Design Partner** | Build a complete design system from scratch. Researches the landscape, proposes creative risks, generates realistic product mockups. Writes `DESIGN.md` in the open DESIGN.md format, so impeccable, Google Stitch, and any tool that reads it share one file. |
-| `/review` | **Staff Engineer** | Find the bugs that pass CI but blow up in production. Auto-fixes the obvious ones. Flags completeness gaps and gate integrity: every weakened test, timeout, snapshot or suppression reaches a human by name. Advisory simplification lens flags over-built code — never blocks, never auto-applies. |
+| `/review` | **Staff Engineer** | Looks for the bugs that pass CI but blow up in production. Auto-fixes the obvious ones. Flags completeness gaps and gate integrity: every weakened test, timeout, snapshot or suppression reaches a human by name. Advisory simplification lens flags over-built code — never blocks, never auto-applies. |
 | `/deslop-shared-libs` | **Shared Code Reviewer** | Find worthwhile shared-code extractions in recent work. Compares up to five opportunities and recommends the best three, with source evidence, reliability gains, and total code savings. Recommendations only. |
 | `/write-skill` | **Skill Editor** | Write a new agent skill or improve one without bloat. A five-step edit ladder (fix the tool first, add nothing the model already does, edit the line instead of appending, lowest level that reaches the agent, rule not story), `gstack-skill-bill` for size per level and growth since the last diet, a drift check that every gstack command and flag a skill names still exists, and full diets proven by a before/after/no-skill test. |
 | `/test-audit` | **Test Auditor** | Sweep existing tests for ones that cost more than they protect: source greps, duplicates, assertion-free probes, test-only exports. Every candidate carries an evidence card; report-only unless you approve a batch. |
-| `/verify` | **Build Loop** | Run the repo's own checks (typecheck, lint, build) and the tests `/ship`'s pre-gate would pick for your change, fix what breaks, repeat until green, then hand off to `/ship`. Asks once before running repo commands; never calls a change green when no test covers it. |
+| `/build-check` | **Build Loop** | Run the repo's own checks (typecheck, lint, build) and the tests `/ship`'s pre-gate would pick for your change, fix what breaks, repeat until green, then hand off to `/ship`. Asks once before running repo commands; never calls a change green when no test covers it. |
 | `/design-review` | **Designer Who Codes** | Same audit as /plan-design-review, then fixes what it finds. Atomic commits, before/after screenshots. If you have impeccable installed, its engine runs first and every mechanical finding arrives tagged with its rule id. |
 | `/devex-review` | **DX Tester** | Live developer experience audit. Actually tests your onboarding: navigates docs, tries the getting started flow, times TTHW, triggers CLI errors the way an agent meets them (`gstack-error-capture`: no terminal, contained, redacted). Compares against `/plan-devex-review` scores — the boomerang that shows if your plan matched reality. |
 | `/design-shotgun` | **Design Explorer** | "Show me options." Generates 4-6 AI mockup variants, opens a comparison board in your browser, collects your feedback, and iterates. Taste memory learns what you like. Repeat until you love something, then hand it to `/design-html`. |
@@ -173,7 +175,7 @@ Each skill feeds into the next. `/office-hours` writes a design doc that `/plan-
 | `/canary` | **SRE** | Post-deploy monitoring loop. Watches for console errors, performance regressions, and page failures. |
 | `/benchmark` | **Performance Engineer** | Baseline page load times, Core Web Vitals, and resource sizes. Compare before/after on every PR. |
 | `/ubicloud` | **Remote Runner** | Run a heavy suite, build or eval on an ephemeral 16-vCPU Ubicloud VM: owner- and TTL-named VMs with a reaper, quota preflight, a hang watchdog, and one committed verify per repository. |
-| `/runaway-stopper` | **Spend Warden** | Find runaway agent threads and subagents on Capy (a standing thread past 500M own tokens or 3 days, a subagent past 100M, empty wakes, endless review rounds), stop them at a clean point, rotate standing threads through a handoff (a crew thread keeps its PR until it merges or closes), and set the defaults that keep them from coming back. `gstack-runaway scan` reads the host's own thread data and never acts. |
+| `/runaway-stopper` | **Spend Warden** | Find runaway agent threads and subagents on Capy (a standing thread past 250M own tokens or 3 days, a subagent past 50M, empty wakes, endless review rounds), stop them at a clean point, rotate standing threads through a handoff (a crew thread keeps its PR until it merges or closes), and set the defaults that keep them from coming back. `gstack-runaway scan` reads the host's own thread data and never acts. |
 | `/eval-plan` | **Eval Planner** | Preregister a paid eval before the first priced call: bars, arms, decoys and stop rules, a $0 stub-model dry run over the real inputs, and a three-item priced pilot whose extrapolation and spend table gate the approval. |
 | `/document-release` | **Technical Writer** | Audit changed behavior against project docs on every ship, before final verification and publication. Also runs standalone. Shows updated, reviewed/current or blocked docs and any remaining gaps. |
 | `/document-generate` | **Documentation Author** | Generate missing docs from scratch using the Diataxis framework. Researches the codebase first, then writes reference / how-to / tutorial / explanation docs that actually match the code. Invokable standalone or chained from `/document-release` when the coverage map finds gaps. Learn more: [tutorial](docs/tutorial-document-generate.md) • [how-to](docs/howto-document-a-shipped-feature.md) • [why Diataxis](docs/explanation-diataxis-in-gstack.md). |
@@ -263,6 +265,7 @@ On Windows without Developer Mode (MSYS2 / Git Bash), `setup` falls back to file
 | [Why gstack](docs/why-gstack.md) | The story, the productivity numbers and their caveats, Karpathy's failure modes, parallel sprints |
 | [Install details](docs/install.md) | Setup timing, requirements in detail, team mode, the hooks setup registers, agent harness registration |
 | [Other agents](docs/hosts.md) | Agent harnesses (OpenClaw, Hermes, dots, QM, Muse Code, Grok, any other), OpenClaw native skills, per-host notes, the Codex profile and model tiers, outside-review providers, the design binary's models |
+| [Working across agent systems](docs/working-across-agent-systems.md) | Running gstack work when more than one agent system touches a repo: one sender per boundary, answers on the pull request, filtered wake-ups instead of polling, every message as a paid turn, pinning the other harness's version and model |
 | [QA without a webpage](docs/qa-without-a-webpage.md) | `/qa` and `/qa-only` on CLIs, APIs, jobs, workers and webhooks |
 | [Standalone binaries](docs/standalone-binaries.md) | The standalone `gstack-*` CLIs (egress auditor, context bill, model benchmark, the review and evidence ledgers, the iOS QA daemon), and the CSO evaluation producer contract |
 | [Privacy & Telemetry](docs/privacy.md) | What is sent, what never is, the update check, outside reviews, egress receipts |
@@ -272,7 +275,7 @@ On Windows without Developer Mode (MSYS2 / Git Bash), `setup` falls back to file
 | [First Production Deploy](docs/howto-bring-up-a-first-deploy.md) | What to do when `/setup-deploy` says nothing is deployed yet: hosting, env and secrets, DNS, checking it works, then back to `/setup-deploy` |
 | [Land a fix in someone else's repo](docs/howto-land-a-fix-in-someone-elses-repo.md) | Read their rules, search for the same fix, run every guard their CI runs before opening, keep it small, answer each review point in a new commit |
 | [Run a human playtest](docs/howto-run-human-playtests.md) | Ask about moments and where people would stop, and why a back-to-back pick between two builds measures the order, not the build |
-| [Check a build before its owner tries it](docs/first-use-check.md) | `gstack-first-use`: an agent from another model family plays the exact build cold, does the first five day-one actions with evidence, checks every link, and only then prints the "try this build" message |
+| [Check a first version before its owner tries it](docs/first-use-check.md) | `gstack-first-use`: the try-it message opens with the owner's own words, and an agent from another model family follows its exact steps on the real target, records a verdict per step, checks every link, and only then prints the message |
 | [Builder Ethos](ETHOS.md) | Builder philosophy: Boil the Ocean, Search Before Building, three layers of knowledge |
 | [GBrain quick tour](docs/gbrain-quick-tour.md) | The four setup paths, MCP registration, the per-repo trust policy, memory sync, Conductor env vars |
 | [Using GBrain with GStack](USING_GBRAIN_WITH_GSTACK.md) | Every path, flag, bin helper, and troubleshooting step for `/setup-gbrain` |

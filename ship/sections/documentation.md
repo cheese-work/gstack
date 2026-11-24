@@ -14,7 +14,7 @@ Save the child handle. An exited child with missing output is stopped, but its a
 
 **Entry:** First entry runs
 `_EX=$(git rev-parse --git-path info/exclude 2>/dev/null) && mkdir -p "$(dirname "$_EX")" && { grep -qxF '/.gstack/tmp/' "$_EX" 2>/dev/null || echo '/.gstack/tmp/' >> "$_EX"; }`
-(the shared `.gstack/tmp` exclude), then `rm -f .gstack/tmp/docs-audit.json` (an
+(the shared `.gstack/tmp` exclude), then `rm .gstack/tmp/docs-audit.json 2>/dev/null || true` (an
 earlier run's record would pass as this run's) and launches the initial audit. On reentry, reuse only this invocation's validated audit or named-risk decision whose accepted
 base/input hashes still match; retain its actual status and scope. Otherwise use
 Blocked recovery, not an unconditional launch.
@@ -34,6 +34,8 @@ Reentry never resets the count or authorizes a launch.
    (`--select <path>` narrows release paths). It records HEAD, branch, index, path
    lists and hashes of release paths, generated outputs and docs, NUL-safely. Read only new files' content;
    the helper hashes the rest. Fill the prompt placeholders with literal candidate values.
+   In `edit` mode, `--docs` names only README.md, `docs/` and `bench/README.md`: the audit edits nothing else. A SKILL.md or
+   template edit after review is a code change and costs the next review round, so a change one needs goes in the PR body as a note.
 
 ## Launch the audit
 
@@ -105,8 +107,8 @@ branch's copy (a PR cannot raise its own cap), prints one `DOCS_CAP: <path> <byt
 (`DOCS_CAP: none declared` without any) and exits 1 on any `over` or absent file: a
 blocked audit, repaired by trimming that file, never by raising the cap. Then save for Step 16 only post-child hashes (rerun the Prepare `snapshot`
 with only `--out <audit-id>-post.json` changed and `--pre <its Prepare snapshot>` added,
-plus `--carry <this run's earlier audit's -post.json>` on a re-audit so receipt write
-resets both audits' files; Step 16 `compare`s it; never type hashes), status, and keep the `<audit-id>-result.json` and private `<audit-id>-documentation.md`
+plus, on a re-audit, `--carry <the earlier audit's -post.json>`, or `--carry-stopped <its Prepare snapshot>` when it stopped before its post snapshot
+(each flag once), so receipt write resets both audits' files; Step 16 `compare`s it; never type hashes), status, and keep the `<audit-id>-result.json` and private `<audit-id>-documentation.md`
 that `result` wrote. That section file is the section's single source;
 reports and Step 19 insert it by command (`cat`) where they can, never retyped or edited.
 Save records once; cite files by path, never copying their content.
@@ -135,7 +137,9 @@ auto-commit or push unexpected child commits.
    result is such a correction: end the remaining attempt's prompt with its
    `RETRY_NOTE:` text verbatim.
    Repeat Prepare using current inputs and a fresh id/snapshot, run the remaining
-   attempt, then validate it through Parent processing.
+   attempt, then validate it through Parent processing. When the stopped audit saved no post
+   snapshot, the re-audit's post snapshot takes `--carry-stopped <the stopped audit's Prepare snapshot>` in place of
+   `--carry`, so receipt write resets the stopped audit's edits too.
 3. Otherwise STOP before commit/publication and do not launch another child.
    AskUserQuestion: stop for repair (recommended), or ship with the specific named
    documentation risk. Only an actual user exception counts, never a default,

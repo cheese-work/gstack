@@ -240,7 +240,7 @@ BODY_REST_FILE="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.gstack/tmp/
 ~/.claude/skills/gstack/bin/gstack-prose-lint "$BODY_TOP_FILE" --sections 'Why,What changed,Blast radius' --gate >&2 || { echo "Not composed: fix what gstack-prose-lint printed above (a PROSE: line is a sentence to rewrite in the draft; a usage line means the draft lost a heading), then rerun." >&2; exit 1; }
 ~/.claude/skills/gstack/bin/gstack-plain-title check --body-file "$BODY_TOP_FILE" >&2 || { echo "Not composed: rewrite what the PLAIN_TITLE: and PLAIN_BODY: lines above name (at most three plain lines before the first ## heading, no listed word above the Agent notes section), then rerun." >&2; exit 1; }
 { awk 1 "$BODY_TOP_FILE" && cat -- "$DOCS_SECTION_FILE" && echo && awk 1 "$BODY_REST_FILE"; } > "$PR_BODY_FILE" || exit 1
-rm -f "$BODY_TOP_FILE" "$BODY_REST_FILE"
+rm "$BODY_TOP_FILE" "$BODY_REST_FILE"
 echo "PR_BODY_FILE: $PR_BODY_FILE"
 ```
 
@@ -249,22 +249,25 @@ per-lane counts (`{"<lane>":{"pass":N,"fail":N,"skip":N}}`) to
 `.gstack/tmp/ship-gate.json` with your file-write tool, then:
 
 ```bash
-rm -f .gstack/tmp/review-loop.json
+rm .gstack/tmp/review-loop.json 2>/dev/null || true
 NS=$(~/.claude/skills/gstack/bin/gstack-no-stop list | sed -n 's/^NO_STOP_FILE: //p'); [ -s "$NS" ] || NS=
 ~/.claude/skills/gstack/bin/gstack-review-scope summary --since "$REVIEW_SINCE" --no-ledger --out .gstack/tmp/review-loop.json &&
 ~/.claude/skills/gstack/bin/gstack-ship-receipt write --pr <pr-number> --run <SESSION_ID> --base <base> --gate @.gstack/tmp/ship-gate.json --pregate .gstack/tmp/pregate.json --issues @.gstack/tmp/issues.json --review-loop @.gstack/tmp/review-loop.json --docs @.gstack/tmp/docs-audit.json $([ -s .gstack/tmp/targeted.json ] && echo --review-targeted @.gstack/tmp/targeted.json) ${NS:+--no-stop "@$NS"} --body "$PR_BODY_FILE"
 ```
 
-If write refuses `review_targeted` for a docs claim added after the read, or after a granted fix round (add its `--grant`), rerun Step 9's plan with `--range-base <its head>
+If write refuses `review_targeted` for a docs claim added after the read, rerun Step 9's plan with `--range-base <its head>
 --targeted-ran <its targeted_patch_id>`; on `NEXT: targeted`, run that one reader (`pass`, its voices stage,
 `verify --targeted-out .gstack/tmp/targeted.json`) and write again.
+If write refuses `RECEIPT_DOCS_AUDIT_READ` (Step 14.5 edited a doc the review read), run its one scoped reader without asking:
+it is not a review round and needs no ruling. Give one reader the packet it names, save the clean record it prints the
+shape of outside the worktree, and write again with `--docs-audit-read <record>`; a finding goes to the lane's Captain.
 A Step 5 red-base pause adds `--base-red <pause file>` (a conditional receipt the queue
 refuses, `QUEUE_RECEIPT_CONDITIONAL`). `--docs` reads the record Step 14.5 saved (`{status, scope[, exception]}`): the
 receipt carries it as `docs`, and a `blocked` status without the owner's exception,
 or a body missing the exception line, is `DOCS_AUDIT_BLOCKED` with nothing written.
-When the owner accepted a stop after a fix-check edit, add
-`--review-loop-exception @<file>` (`{accepted_by, date, via, reason, fix_check: {head, findings}}`)
-and put its printed `Review-loop exception:` line in the body; never a prose line under `REVIEW_LOOP:`.
+`--review-loop-exception` (an owner's acceptance of a stop after a fix-check edit) is deprecated with fix-check grants and goes
+in the next release; write still takes one recorded before GST-3562. After the round cap, a blocker goes to the lane's Captain,
+whose ruling is a ruled note (below); never a prose line under `REVIEW_LOOP:`.
 A finding the owner rules a disclosed note instead of a fix is closed only by the owner's
 `gstack-approvals rule`, recorded outside this run, never by this run or a review-log field
 (docs/ship-policy.md#ruled-notes); the receipt lists each one as `ruled_notes`.
@@ -309,7 +312,7 @@ It updates the body, then the title, retries a retired-GraphQL edit through REST
 reads the title back. Then resolve the draft state from Step 9's gate findings:
 
 1. Step 6.5 opened this PR as an early draft, the user did not ask for a draft, and no
-   gate finding is `open`: mark it ready now with `gh pr ready <pr-number>`.
+   gate finding is `open`: mark it ready now with `gh pr ready <pr-number>` (on Capy, with the host's PR tool instead).
 2. Step 6.5 opened it as an early draft and any gate finding is `open`: leave it a
    draft; print `Draft kept: Gate edits: N open` and the open findings' `gate` and path.
 3. The PR was already ready (not a draft) and any gate finding is `open`: publish only
@@ -330,7 +333,10 @@ TITLE_FILE="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.gstack/tmp/<tit
 With open gate findings the same command carries `--draft` before `--title-file`.
 
 Branch on the exit code of either block:
-- **0** posted. Remove `$PR_BODY_FILE` and the title file.
+- **0** posted. If `pr-body` printed `kept` sections, open each in the PR: keep one a person
+  wrote. One an earlier /ship run wrote is stale: put the live body (it keeps the run history)
+  minus those sections in `$PR_BODY_FILE`. Read the live body again: if it changed, stop and report;
+  else rerun the body command with `--replace`. When unsure, keep it and name it in Step 22's report. Then remove `$PR_BODY_FILE` and the title file.
 - **4** nothing was posted, title and body checked in one pass. For each `PLAIN_TITLE:` line, rewrite the
   title file's front the way it says (Step 18 item 5); for each `PLAIN_BODY:` line, rewrite `$PR_BODY_FILE`
   the way it says (docs/troubleshooting.md#plain-body-refused). Then rerun the same block.

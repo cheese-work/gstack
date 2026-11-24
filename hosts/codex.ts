@@ -8,7 +8,7 @@ import { defineHost, GBRAIN_RESOLVERS } from './define-host';
  */
 export const CODEX_SUBAGENT_DISPATCH = "Codex's `spawn_agent` (`fork_turns: \"none\"`), then `wait_agent` until a final status (a timeout is not one); its final message is the result. Without `spawn_agent`, the dispatch failed";
 /** The same call where a step only names it inline. */
-export const CODEX_SUBAGENT_CALL = "Codex's `spawn_agent`, then `wait_agent` for its final message";
+export const CODEX_SUBAGENT_CALL = "`spawn_agent` with `fork_turns: \"none\"`, then `wait_agent`";
 
 const codex = defineHost({
   name: 'codex',
@@ -64,9 +64,11 @@ const codex = defineHost({
     'using Agent, `subagent_type: "general-purpose"`\nand `run_in_background: false`': "using Codex's `spawn_agent`, then `wait_agent`",
     'one read-only Agent (`subagent_type: "general-purpose"`,\n   `run_in_background: false`)': "one read-only subagent (Codex's `spawn_agent`, then `wait_agent`)",
     'with the Agent tool (never Skill),\n`subagent_type: "general-purpose"`.': "with Codex's `spawn_agent` (never Skill).",
-    'Claude Code: set Agent `run_in_background: false` if its schema exposes it.\n  A launch receipt means it went background: await its completion notice.\n  Other hosts: foreground; await completion when supported.': 'Codex: `spawn_agent` sends the Agent prompt below; then `wait_agent` until its final status.',
-    '(via Agent tool):': "(via Codex's `spawn_agent`):",
-    'through the Agent tool (a plain Read': "through Codex's `spawn_agent` and `wait_agent` (a plain Read",
+    'Claude Code: set Agent `run_in_background: false` if its schema exposes it.\n  A launch receipt means it went background: await its completion notice.\n  Other hosts: foreground; await completion when supported.': '`spawn_agent` (`fork_turns: "none"`) sends the prompt below; `wait_agent` until its final status.',
+    '(via Agent tool):': '(via `spawn_agent`):',
+    'verbatim as the Agent prompt:': 'verbatim as the prompt:',
+    'not the Agent prompt.': 'not the prompt.',
+    'through the Agent tool (a plain Read': "through Codex's `spawn_agent` (`fork_turns: \"none\"`) and `wait_agent` (a plain Read",
   },
 
   transcripts: {
@@ -75,7 +77,7 @@ const codex = defineHost({
   },
 
   coAuthorTrailer: 'Co-Authored-By: OpenAI Codex <noreply@openai.com>',
-  boundaryInstruction: 'IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Do not invoke any installed skill (Codex home skills/, .agents/); answer directly. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.',
+  boundaryInstruction: 'IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, .agents/, or any agents/openai.yaml. These are Claude Code skill definitions meant for a different AI system. Do not invoke any installed skill (Codex home skills/, .agents/); answer directly. Ignore them completely. Do NOT modify agents/openai.yaml; other files in the repository agents/ folder are code to review. Stay focused on the repository code only.',
 });
 
 export default codex;
