@@ -234,7 +234,12 @@ describe('free-tests workflow wiring', () => {
       expect(retry, name).toBe(install + 1);
       for (const step of [steps[install], steps[retry]]) {
         expect(step['timeout-minutes'], name).toBe(5);
-        expect(step.run, name).toBe('npx playwright install --with-deps chromium');
+        // CHE-9158: apt waits for the dpkg lock first; the install command stays the last line.
+        const lines = String(step.run).trim().split('\n').filter((line: string) => !line.startsWith('#'));
+        expect(lines, name).toEqual([
+          `echo 'DPkg::Lock::Timeout "180";' | sudo tee /etc/apt/apt.conf.d/99-lock-timeout > /dev/null`,
+          'npx playwright install --with-deps chromium',
+        ]);
       }
       expect(steps[install]['continue-on-error'], name).toBe(true);
       const failOpen = name === 'free-suite' ? [steps[install], steps.find((step: any) => step.name === 'Upload shard JUnit reports')] : [steps[install]];

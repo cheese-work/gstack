@@ -686,6 +686,23 @@ export function stateRoot(env: Record<string, string | undefined> = process.env)
   // The shared chain (lib/state-root.ts), made absolute. Security artifacts are intentionally outside every sync allowlist.
   return resolve(resolveStateRoot(env));
 }
+/**
+ * Inside a user namespace (for example a Codex `bwrap --unshare-user` sandbox) host root-owned
+ * directories stat as the kernel overflow uid 65534. Treat that as root-owned only when this process
+ * really runs in a non-initial user namespace, so a genuine uid 65534 (`nobody`) owner on the host is
+ * still rejected.
+ */
+export function unmappedRootInUserNamespace(
+  uid: number,
+  readUidMap: () => string = () => fs.readFileSync('/proc/self/uid_map', 'utf8'),
+): boolean {
+  if (uid !== 65534 || process.platform !== 'linux') return false;
+  try {
+    return readUidMap().trim().split(/\s+/).join(' ') !== '0 0 4294967295';
+  } catch {
+    return false;
+  }
+}
 function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
   const p = resolve(path),
     root = parse(p).root;
@@ -706,7 +723,7 @@ function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
     if (s.isSymbolicLink() || !s.isDirectory())
       throw new CsoError('UNSAFE_PATH', 'Private state has a symlink or non-directory ancestor');
     // Root-owned system ancestors are normal; a writable ancestor owned by anyone else is not.
-    if (s.uid !== process.getuid?.() && s.uid !== 0)
+    if (s.uid !== process.getuid?.() && s.uid !== 0 && !unmappedRootInUserNamespace(s.uid))
       throw new CsoError('UNSAFE_PATH', 'Private state ancestor has an unexpected owner');
     if (process.platform !== 'win32' && s.mode & 0o022 && !(s.mode & 0o1000))
       throw new CsoError('UNSAFE_PATH', 'Private state has a group- or world-writable ancestor');
