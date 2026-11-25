@@ -139,6 +139,15 @@ jobs:
             echo 'No changed test file is in the curated Windows-safe subset, so no Windows job runs.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # Budget (CHE-9817): the 4 Windows shards each get 600 s of the Windows-measured seed (an
+          # unseeded file counts 30 s). An upstream sync selects ~110 files, ~25 min on Windows: skip it here;
+          # windows-free-tests.yml runs the whole curated suite nightly on main.
+          seed="${GSTACK_FREE_TEST_DURATIONS:-scripts/free-test-durations-windows.json}"
+          predicted_ms=$(jq -Rn --slurpfile d "$seed" '[inputs | $d[0].durations[.] // 30000] | add' "$RUNNER_TEMP/selected")
+          if [ "$predicted_ms" -gt 2400000 ]; then
+            echo "The Windows seed predicts $((predicted_ms / 1000)) s for the $(wc -l < "$RUNNER_TEMP/selected" | tr -d ' ') selected files, over the 2400 s budget (4 shards x 600 s), so no Windows job runs. windows-free-tests (nightly, full curated suite) covers them." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           { echo 'files<<GSTACK_SCOPED_FILES'; cat "$RUNNER_TEMP/selected"; echo 'GSTACK_SCOPED_FILES'; } >> "$GITHUB_OUTPUT"
           { echo "The Windows job runs $(wc -l < "$RUNNER_TEMP/selected" | tr -d ' ') changed Windows-safe test file(s):"; sed 's/^/- /' "$RUNNER_TEMP/selected"; } >> "$GITHUB_STEP_SUMMARY"
 
@@ -146,7 +155,7 @@ jobs:
     needs: windows-scope
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.files != '') || needs.windows-scope.outputs.files != '' }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -186,6 +195,8 @@ jobs:
       - name: Run the scoped Windows-safe test files
         env:
           FILES: ${{ inputs.files || needs.windows-scope.outputs.files }}
+          # Pack and time the shards by Windows-measured durations: the Linux seed is ~7x too fast (CHE-9817).
+          GSTACK_FREE_TEST_DURATIONS: scripts/free-test-durations-windows.json
           GSTACK_FREE_RETRY_FLAKY: '1'
           GSTACK_FLAKE_LEDGER: ${{ runner.temp }}/flake-ledger.jsonl
           TEMP: ${{ runner.temp }}
