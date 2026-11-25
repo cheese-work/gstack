@@ -146,7 +146,9 @@ jobs:
     needs: windows-scope
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.files != '') || needs.windows-scope.outputs.files != '' }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    # Large selections get 15 minutes per runner phase (parallel, optional
+    # exclusive, existing serial retry), plus five minutes for setup/logs.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -193,7 +195,14 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$FILES" | tr -d '\r' | tr ' ' '\n' | sed '/^$/d' > "$RUNNER_TEMP/windows-scoped-files.txt"
-          bun run scripts/test-free-shards.ts --files-from "$RUNNER_TEMP/windows-scoped-files.txt"
+          # More than 72 files exceeds the runner's six-minute floor at its
+          # five-seconds-per-file heuristic. The 113-file sync timed out all
+          # four shards at that floor. Keep ordinary scopes on runner defaults.
+          extra_args=()
+          if [ "$(wc -l < "$RUNNER_TEMP/windows-scoped-files.txt")" -gt 72 ]; then
+            extra_args=(--wall-timeout 900)
+          fi
+          bun run scripts/test-free-shards.ts --files-from "$RUNNER_TEMP/windows-scoped-files.txt" "${extra_args[@]}"
         shell: bash
 
       - name: Upload full test logs
