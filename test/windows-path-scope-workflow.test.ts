@@ -225,6 +225,31 @@ describe('the path-scoped Windows shard on pull requests', () => {
     expect(lanes.map(l => [l.job, l.manual])).toEqual([['windows-scoped-shard', true]]);
   });
 
+  test.skipIf(!Bun.which('bash'))('large scoped selections get a bounded deadline without losing files or swallowing failures', () => {
+    const shard = scoped.jobs['windows-scoped-shard'];
+    const run = shard.steps.find((s: any) => s.name === 'Run the scoped Windows-safe test files');
+    const temp = newTemp();
+    const bin = path.join(temp, 'bin');
+    fs.mkdirSync(bin);
+    // Exercise the actual workflow script, capturing what it hands the runner.
+    fs.writeFileSync(path.join(bin, 'bun'), '#!/bin/bash\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/args"\nexit "${STUB_EXIT:-0}"\n', { mode: 0o755 });
+    for (const [count, separator, failure] of [[1, ' ', 0], [72, '\n', 0], [73, ' ', 0], [113, '\r\n', 0], [113, ' ', 124], [1, '\n', 1]] as const) {
+      const files = Array.from({ length: count }, (_, i) => `test/scope-${i}.test.ts`);
+      const result = runStep(run.run, ROOT, {
+        PATH: `${toShell(bin)}:${process.env.PATH}`, FILES: files.join(separator), STUB_EXIT: String(failure),
+      }, temp);
+      expect(result.status, result.stderr).toBe(failure);
+      expect(fs.readFileSync(path.join(temp, 'windows-scoped-files.txt'), 'utf8').trim().split('\n')).toEqual(files);
+      const args = fs.readFileSync(path.join(temp, 'args'), 'utf8').trim().split('\n');
+      expect(args.slice(0, 4)).toEqual(['run', 'scripts/test-free-shards.ts', '--files-from', `${toShell(temp)}/windows-scoped-files.txt`]);
+      expect(args.slice(4)).toEqual(count > 72 ? ['--wall-timeout', '900'] : []);
+    }
+    // Parallel phase, optional exclusive phase, then the existing serial retry
+    // each inherit the explicit wall. Allow five minutes for setup and logs.
+    expect(shard['timeout-minutes']).toBeGreaterThanOrEqual((3 * 900) / 60 + 5);
+    expect(shard['timeout-minutes']).toBeLessThanOrEqual(50);
+  });
+
   test("#3758's and #3829's failing test files are in the curated Windows-safe subset", () => {
     const { safe } = curateWindowsSafe(collectFreeTestFiles(ROOT), ROOT);
     expect(safe).toContain('test/hook-scripts.test.ts');
