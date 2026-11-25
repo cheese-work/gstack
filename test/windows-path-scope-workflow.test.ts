@@ -299,24 +299,18 @@ describe('the path-scoped Windows shard on pull requests', () => {
     expect(run.env.GSTACK_FREE_TEST_DURATIONS).toBe('scripts/free-test-durations-windows.json');
   });
 
-  // Budget: 4 shards x 600 s = 2400 s of Windows seed; an unseeded file counts 30 s.
-  test.skipIf(!CAN_SELECT)('CHE-9817: a selection the Windows seed predicts over budget starts no Windows job and points at the nightly suite', () => {
+  // A large selection is never skipped: a green run with no Windows job proves nothing (CHE-9817).
+  test.skipIf(!CAN_SELECT)('CHE-9817: a selection the Windows seed predicts at 2600 s is still selected, not skipped', () => {
     const files = ['test/sync-a.test.ts', 'test/sync-b.test.ts'];
     const dir = prRepo(['bin/gstack-example', ...files]);
     try {
       const job = scopeJob(dir, files, { 'test/sync-a.test.ts': 1_300_000, 'test/sync-b.test.ts': 1_300_000 });
-      expect([job.windows, job.files]).toEqual(['true', undefined]);
-      expect(job.summary).toContain('windows-free-tests');
+      expect([job.windows, job.files]).toEqual(['true', files.join('\n')]);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test.skipIf(!CAN_SELECT)('CHE-9817: a selection within budget runs, and the unseeded file counts 30 s', () => {
-    const files = ['test/sync-a.test.ts', 'test/sync-b.test.ts'];
-    const dir = prRepo(['bin/gstack-example', ...files]);
-    try {
-      expect(scopeJob(dir, files, { 'test/sync-a.test.ts': 2_370_000 }).files).toBe(files.join('\n'));
-      expect(scopeJob(dir, files, { 'test/sync-a.test.ts': 2_370_001 }).files).toBeUndefined();
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  test('CHE-9817: the Windows job timeout leaves headroom for a 2773 s selection plus setup', () => {
+    expect(scoped.jobs['windows-scoped-shard']['timeout-minutes']).toBeGreaterThanOrEqual(60);
   });
 
   test.skipIf(!CAN_SELECT)('in scope but no changed Windows-safe test file: no files, so no Windows job', () => {
