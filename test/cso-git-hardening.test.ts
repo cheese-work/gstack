@@ -223,6 +223,26 @@ describe('CSO Git config includes in managed worktrees',()=>{
     await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
   });
 
+  test.skipIf(process.platform==='win32')('rejects an include in an ordinary clone, even to a file inside .git',async()=>{
+    const {root,repo,git}=fixture(),gitDir=path.join(repo,'.git'),rejected={code:'UNSAFE_PATH',message:'Repository Git config includes are not allowed during a security snapshot'};
+    fs.writeFileSync(path.join(gitDir,'local.config'),'[user]\n\tname = "bot"\n');
+    // Shared config of an ordinary clone.
+    fs.appendFileSync(path.join(gitDir,'config'),'[include]\n\tpath = local.config\n');
+    await expect(readGitMetadata(repo,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    // config.worktree of the main worktree (gitDir === commonDir) is not a managed worktree either.
+    fs.writeFileSync(path.join(gitDir,'config'),'[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n');
+    fs.writeFileSync(path.join(gitDir,'config.worktree'),'[include]\n\tpath = local.config\n');
+    await expect(readGitMetadata(repo,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    expect(git).toBeDefined();
+  });
+
+  test.skipIf(process.platform==='win32')('rejects an include in the shared config of a linked worktree',async()=>{
+    const {root,linked,gitDir}=managed(),common=fs.realpathSync(path.resolve(gitDir,fs.readFileSync(path.join(gitDir,'commondir'),'utf8').trim()));
+    fs.writeFileSync(path.join(common,'local.config'),'[user]\n\tname = "bot"\n');
+    fs.appendFileSync(path.join(common,'config'),'[include]\n\tpath = local.config\n');
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+  });
+
   test.skipIf(process.platform==='win32')('detects the included file changing during a metadata operation',async()=>{
     const {root,linked,identity}=managed();
     const original=fs.lstatSync;let hits=0;

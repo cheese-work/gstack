@@ -310,6 +310,8 @@ interface GitConfigIdentity {
   exists: boolean;
   /** True for a file pulled in by an accepted [include]; it may not include anything itself. */
   included?: boolean;
+  /** True when the caller verified a managed worktree config that may carry plain includes. */
+  allowIncludes?: boolean;
   dev?: number;
   ino?: number;
   mode?: number;
@@ -430,21 +432,24 @@ function plainIncludePaths(content: string): string[] | undefined {
   }
   return paths;
 }
-function boundedConfig(path: string, included = false): GitConfigIdentity[] {
+function boundedConfig(path: string, included = false, allowIncludes = false): GitConfigIdentity[] {
   const file = boundedMetadataFile(path, GIT_CONFIG_LIMIT, 'Repository Git configuration', true);
   if (!file) return [{ path, exists: false, ...(included ? { included } : {}) }];
   const { content } = file;
   // There is no process-wide "--no-includes" switch for ordinary Git
   // commands. Reject include directives before spawning Git so repository
   // configuration cannot pull policy or executable settings from elsewhere.
-  // The one exception: plain relative `[include] path` entries that resolve to
-  // a regular file directly inside the Git admin directory that holds this
-  // config (never the working tree, never outside it). Each such file is bound
-  // like the config itself and may not include anything further.
+  // The one exception, only when the caller verified a managed worktree (the
+  // `config.worktree` of a linked worktree): plain relative `[include] path`
+  // entries that resolve to a regular file directly inside the Git admin
+  // directory that holds this config (never the working tree, never outside
+  // it). Each such file is bound like the config itself and may not include
+  // anything further. Ordinary clones and shared `config` files never qualify.
   const identity: GitConfigIdentity = {
     path,
     exists: true,
     ...(included ? { included } : {}),
+    ...(allowIncludes ? { allowIncludes } : {}),
     dev: file.dev,
     ino: file.ino,
     mode: file.mode,
@@ -454,7 +459,7 @@ function boundedConfig(path: string, included = false): GitConfigIdentity[] {
     content,
   };
   if (!GIT_INCLUDE_SECTION.test(content)) return [identity];
-  const targets = included ? undefined : plainIncludePaths(content);
+  const targets = included || !allowIncludes ? undefined : plainIncludePaths(content);
   if (!targets?.length) throw new CsoError('UNSAFE_PATH', INCLUDE_REJECTED);
   const home = realpathSync(dirname(path));
   const bound = targets.map((target) => {
@@ -505,12 +510,19 @@ function gitConfigIdentities(repo: string): GitConfigIdentity[] {
   // extensions.worktreeConfig makes config.worktree active in both linked and
   // main worktrees. Bind even its absence so it cannot appear after inspection
   // and feed Git an unchecked include or executable setting.
-  return [join(commonDir, 'config'), join(gitDir, 'config.worktree')].flatMap((path) => boundedConfig(path));
+  // Only a linked worktree's own config.worktree (gitDir differs from commonDir)
+  // may carry the managed identity include; the shared config and an ordinary
+  // clone's config.worktree keep rejecting every include.
+  const managed = gitDir !== commonDir;
+  return [
+    ...boundedConfig(join(commonDir, 'config')),
+    ...boundedConfig(join(gitDir, 'config.worktree'), false, managed),
+  ];
 }
 function assertGitConfigIdentities(expected: GitConfigIdentity[]): void {
   for (const item of expected) {
     // An included file is re-read as a leaf; its parent re-validates the include set on its own turn.
-    const current = boundedConfig(item.path, item.included)[0];
+    const current = boundedConfig(item.path, item.included, item.allowIncludes)[0];
     if (
       current.exists !== item.exists ||
       current.included !== item.included ||
