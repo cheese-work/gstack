@@ -139,6 +139,14 @@ jobs:
             echo 'No changed test file is in the curated Windows-safe subset, so no Windows job runs.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # CHE-9815: one windows-latest job runs 4 shards with a 360s deadline each; 113 files (an upstream sync) timed out every shard.
+          # Past the cap the nightly Windows Free Tests (10 runner jobs) covers them; windows-smoke still runs on every pull request.
+          max=40
+          n=$(wc -l < "$RUNNER_TEMP/selected" | tr -d ' ')
+          if [ "$n" -gt "$max" ]; then
+            echo "$n changed Windows-safe test files exceed the scoped lane's $max-file cap, so no scoped Windows job runs; the nightly Windows Free Tests covers them." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           { echo 'files<<GSTACK_SCOPED_FILES'; cat "$RUNNER_TEMP/selected"; echo 'GSTACK_SCOPED_FILES'; } >> "$GITHUB_OUTPUT"
           { echo "The Windows job runs $(wc -l < "$RUNNER_TEMP/selected" | tr -d ' ') changed Windows-safe test file(s):"; sed 's/^/- /' "$RUNNER_TEMP/selected"; } >> "$GITHUB_STEP_SUMMARY"
 

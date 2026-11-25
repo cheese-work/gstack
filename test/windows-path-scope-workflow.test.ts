@@ -256,6 +256,25 @@ describe('the path-scoped Windows shard on pull requests', () => {
     expect(select.outputs.files).toBe('test/hook-scripts.test.ts');
   }, 60_000);
 
+  test.skipIf(!CAN_SELECT)('CHE-9815: more than 40 changed Windows-safe tests (an upstream sync) skip the scoped lane, which cannot finish them in 4 shards', () => {
+    const many = Array.from({ length: 41 }, (_, i) => `test/sync-${i}.test.ts`);
+    const select = (changed: string[]) => {
+      const temp = newTemp();
+      const bin = path.join(temp, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'bun'), '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --ci-plan ] && printf \'%s\' "$PLAN_JSON" > "$2"; shift; done\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(temp, 'changed-files'), changed.join('\n') + '\n');
+      const plan = JSON.stringify({ version: 1, revision: 'r', shards: [{ shard: 1, predictedMs: 1, files: many }], id: 'x' });
+      const r = runStep(selectScript, ROOT, { PATH: `${toShell(bin)}:${process.env.PATH}`, PLAN_JSON: plan }, temp);
+      expect(r.status, r.stderr).toBe(0);
+      return r;
+    };
+    const over = select(many);
+    expect(over.outputs.files).toBeUndefined();
+    expect(over.summary).toContain('exceed the scoped lane');
+    expect(select(many.slice(0, 40)).outputs.files?.split('\n')).toHaveLength(40);
+  });
+
   test.skipIf(!CAN_SELECT)('#3758: the hook paths put it in scope and the Windows job runs test/hook-scripts.test.ts', () => {
     const dir = prRepo(PR_3758);
     try {
