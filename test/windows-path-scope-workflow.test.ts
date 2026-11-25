@@ -214,7 +214,7 @@ describe('the path-scoped Windows shard on pull requests', () => {
     expect(shard.needs).toBe('windows-scope');
     expect(shard.steps[0].with).toEqual({ 'persist-credentials': false });
     const run = shard.steps.find((s: any) => s.name === 'Run the scoped Windows-safe test files');
-    expect(run.env.FILES).toBe('${{ inputs.files || needs.windows-scope.outputs.files }}');
+    expect(run.env.FILES).toBe('${{ inputs.files || matrix.files }}');
     expect(run.env.GSTACK_FREE_RETRY_FLAKY).toBe('1');
     expect(run.run).toContain('bun run scripts/test-free-shards.ts --files-from "$RUNNER_TEMP/windows-scoped-files.txt"');
     expect(scoped.jobs['windows-scoped-tests'].needs).toEqual(['windows-scope', 'windows-scoped-shard']);
@@ -256,23 +256,29 @@ describe('the path-scoped Windows shard on pull requests', () => {
     expect(select.outputs.files).toBe('test/hook-scripts.test.ts');
   }, 60_000);
 
-  test.skipIf(!CAN_SELECT)('CHE-9815: more than 40 changed Windows-safe tests (an upstream sync) skip the scoped lane, which cannot finish them in 4 shards', () => {
-    const many = Array.from({ length: 41 }, (_, i) => `test/sync-${i}.test.ts`);
-    const select = (changed: string[]) => {
+  test.skipIf(!CAN_SELECT)('CHE-9815: a large change (an upstream sync) runs every selected test, dealt into at most 10 Windows jobs', () => {
+    const select = (count: number) => {
+      const many = Array.from({ length: count }, (_, i) => `test/sync-${i}.test.ts`);
       const temp = newTemp();
       const bin = path.join(temp, 'bin');
       fs.mkdirSync(bin);
       fs.writeFileSync(path.join(bin, 'bun'), '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --ci-plan ] && printf \'%s\' "$PLAN_JSON" > "$2"; shift; done\n', { mode: 0o755 });
-      fs.writeFileSync(path.join(temp, 'changed-files'), changed.join('\n') + '\n');
+      fs.writeFileSync(path.join(temp, 'changed-files'), many.join('\n') + '\n');
       const plan = JSON.stringify({ version: 1, revision: 'r', shards: [{ shard: 1, predictedMs: 1, files: many }], id: 'x' });
       const r = runStep(selectScript, ROOT, { PATH: `${toShell(bin)}:${process.env.PATH}`, PLAN_JSON: plan }, temp);
       expect(r.status, r.stderr).toBe(0);
-      return r;
+      const groups = (JSON.parse(r.outputs.matrix!) as { include: { group: number; files: string }[] }).include;
+      // Nothing is skipped: the groups together hold exactly the selected files, and each runs as its own job.
+      expect(groups.flatMap(g => g.files.split('\n')).sort()).toEqual([...many].sort());
+      expect(r.outputs.files?.split('\n')).toHaveLength(count);
+      return groups;
     };
-    const over = select(many);
-    expect(over.outputs.files).toBeUndefined();
-    expect(over.summary).toContain('exceed the scoped lane');
-    expect(select(many.slice(0, 40)).outputs.files?.split('\n')).toHaveLength(40);
+    expect(select(20)).toHaveLength(1);
+    expect(select(21)).toHaveLength(2);
+    const sync = select(113);
+    expect(sync).toHaveLength(6);
+    expect(Math.max(...sync.map(g => g.files.split('\n').length))).toBeLessThanOrEqual(19);
+    expect(select(500)).toHaveLength(10);
   });
 
   test.skipIf(!CAN_SELECT)('#3758: the hook paths put it in scope and the Windows job runs test/hook-scripts.test.ts', () => {
