@@ -716,7 +716,11 @@ function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
       fs.mkdirSync(cursor, { mode: 0o700 });
       created = true;
     } catch (error: any) {
-      if (error?.code !== 'EEXIST') throw error;
+      if (error?.code !== 'EEXIST')
+        throw new CsoError(
+          'PERSISTENCE_FAILED',
+          `Private state directory could not be created (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
+        );
     }
     if (cursor === p) leafCreated = created;
     const s = fs.lstatSync(cursor);

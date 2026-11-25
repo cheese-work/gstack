@@ -12,7 +12,7 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs';
-import { basename, dirname, join, isAbsolute, delimiter, resolve } from 'node:path';
+import { basename, dirname, join, isAbsolute, delimiter, resolve, sep } from 'node:path';
 import { redactFindingSpans, redactJsonFindingSpans } from '../redact-engine';
 import { CsoError, MAX_OUTPUT } from './contracts';
 import { windowsDockerUnavailable } from './windows-docker';
@@ -308,6 +308,8 @@ export interface ProcessResult {
 interface GitConfigIdentity {
   path: string;
   exists: boolean;
+  /** True for a file pulled in by an accepted [include]; it may not include anything itself. */
+  included?: boolean;
   dev?: number;
   ino?: number;
   mode?: number;
@@ -400,21 +402,49 @@ function boundedMetadataFile(
       } catch {}
   }
 }
-function boundedConfig(path: string): GitConfigIdentity {
+const GIT_INCLUDE_SECTION = /^\s*\[\s*include(?:if)?(?=[\s."\]])/im;
+const INCLUDE_REJECTED = 'Repository Git config includes are not allowed during a security snapshot';
+/**
+ * Include targets of a config whose only include directives are plain
+ * `[include]` sections with `path = <plain relative name>` lines (what the
+ * Multica managed-worktree setup writes for its identity defaults). Returns
+ * undefined for anything else (includeIf, subsections, quoting, escapes,
+ * other keys, same-line values) so the caller rejects it.
+ */
+function plainIncludePaths(content: string): string[] | undefined {
+  const paths: string[] = [];
+  let inInclude = false;
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    if (line.startsWith('[')) {
+      if (/^\[\s*include\s*\]$/i.test(line)) inInclude = true;
+      else if (GIT_INCLUDE_SECTION.test(line)) return undefined;
+      else inInclude = false;
+      continue;
+    }
+    if (!inInclude) continue;
+    const match = /^path\s*=\s*([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/i.exec(line);
+    if (!match || match[1].split('/').some((part) => part === '.' || part === '..')) return undefined;
+    paths.push(match[1]);
+  }
+  return paths;
+}
+function boundedConfig(path: string, included = false): GitConfigIdentity[] {
   const file = boundedMetadataFile(path, GIT_CONFIG_LIMIT, 'Repository Git configuration', true);
-  if (!file) return { path, exists: false };
+  if (!file) return [{ path, exists: false, ...(included ? { included } : {}) }];
   const { content } = file;
   // There is no process-wide "--no-includes" switch for ordinary Git
   // commands. Reject include directives before spawning Git so repository
   // configuration cannot pull policy or executable settings from elsewhere.
-  if (/^\s*\[\s*include(?:if)?(?=[\s."\]])/im.test(content))
-    throw new CsoError(
-      'UNSAFE_PATH',
-      'Repository Git config includes are not allowed during a security snapshot',
-    );
-  return {
+  // The one exception: plain relative `[include] path` entries that resolve to
+  // a regular file directly inside the Git admin directory that holds this
+  // config (never the working tree, never outside it). Each such file is bound
+  // like the config itself and may not include anything further.
+  const identity: GitConfigIdentity = {
     path,
     exists: true,
+    ...(included ? { included } : {}),
     dev: file.dev,
     ino: file.ino,
     mode: file.mode,
@@ -423,6 +453,25 @@ function boundedConfig(path: string): GitConfigIdentity {
     ctimeMs: file.ctimeMs,
     content,
   };
+  if (!GIT_INCLUDE_SECTION.test(content)) return [identity];
+  const targets = included ? undefined : plainIncludePaths(content);
+  if (!targets?.length) throw new CsoError('UNSAFE_PATH', INCLUDE_REJECTED);
+  const home = realpathSync(dirname(path));
+  const bound = targets.map((target) => {
+    const resolved = join(home, target);
+    let real: string;
+    try {
+      real = realpathSync(resolved);
+    } catch {
+      throw new CsoError('UNSAFE_PATH', INCLUDE_REJECTED);
+    }
+    if (real !== resolved || !real.startsWith(`${home}${sep}`))
+      throw new CsoError('UNSAFE_PATH', INCLUDE_REJECTED);
+    const leaf = boundedConfig(real, true);
+    if (!leaf[0].exists) throw new CsoError('UNSAFE_PATH', INCLUDE_REJECTED);
+    return leaf;
+  });
+  return [identity, ...bound.flat()];
 }
 function gitDirectories(repo: string): { gitDir: string; commonDir: string } {
   const marker = join(repo, '.git'),
@@ -456,13 +505,15 @@ function gitConfigIdentities(repo: string): GitConfigIdentity[] {
   // extensions.worktreeConfig makes config.worktree active in both linked and
   // main worktrees. Bind even its absence so it cannot appear after inspection
   // and feed Git an unchecked include or executable setting.
-  return [join(commonDir, 'config'), join(gitDir, 'config.worktree')].map(boundedConfig);
+  return [join(commonDir, 'config'), join(gitDir, 'config.worktree')].flatMap((path) => boundedConfig(path));
 }
 function assertGitConfigIdentities(expected: GitConfigIdentity[]): void {
   for (const item of expected) {
-    const current = boundedConfig(item.path);
+    // An included file is re-read as a leaf; its parent re-validates the include set on its own turn.
+    const current = boundedConfig(item.path, item.included)[0];
     if (
       current.exists !== item.exists ||
+      current.included !== item.included ||
       current.dev !== item.dev ||
       current.ino !== item.ino ||
       current.mode !== item.mode ||

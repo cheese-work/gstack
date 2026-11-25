@@ -2919,6 +2919,17 @@ const PRODUCTION_CLI_DEPENDENCIES: CsoCliDependencies = Object.freeze({
   catalogImageSession: productionCatalogImageSession,
   watchdogPath: watchdog,
 });
+/**
+ * An exception that is not a CsoError is a helper fault, not a rejected input.
+ * Filesystem faults keep their errno name so the caller can act on it; only a
+ * truly unknown exception keeps the opaque INVALID_SCHEMA label.
+ */
+export function unexpectedFailure(error: unknown): CsoError {
+  const errno = (error as { code?: unknown } | null)?.code;
+  if (typeof errno === 'string' && /^E[A-Z0-9]{2,}$/.test(errno))
+    return new CsoError('PERSISTENCE_FAILED', `The helper hit a filesystem error (${errno})`);
+  return new CsoError('INVALID_SCHEMA', 'The helper rejected an unexpected or unsafe input');
+}
 async function main() {
   const args = process.argv.slice(2),
     command = args.shift();
@@ -2949,10 +2960,7 @@ async function main() {
 }
 if (import.meta.main)
   main().catch((error) => {
-    const e =
-      error instanceof CsoError
-        ? error
-        : new CsoError('INVALID_SCHEMA', 'The helper rejected an unexpected or unsafe input');
+    const e = error instanceof CsoError ? error : unexpectedFailure(error);
     try {
       process.stderr.write(
         redact(JSON.stringify({ ok: false, error: { code: e.code, message: e.message } })) + '\n',
