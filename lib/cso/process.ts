@@ -505,15 +505,27 @@ function gitDirectories(repo: string): { gitDir: string; commonDir: string } {
   }
   return { gitDir, commonDir };
 }
+function insideManagedRoot(paths: string[]): boolean {
+  const configured = process.env.MULTICA_TASK_WORKSPACES_ROOT;
+  if (!configured || !isAbsolute(configured)) return false;
+  try {
+    const root = realpathSync(configured);
+    return paths.every((path) => realpathSync(path).startsWith(`${root}${sep}`));
+  } catch {
+    return false;
+  }
+}
 function gitConfigIdentities(repo: string): GitConfigIdentity[] {
   const { gitDir, commonDir } = gitDirectories(repo);
   // extensions.worktreeConfig makes config.worktree active in both linked and
   // main worktrees. Bind even its absence so it cannot appear after inspection
   // and feed Git an unchecked include or executable setting.
-  // Only a linked worktree's own config.worktree (gitDir differs from commonDir)
-  // may carry the managed identity include; the shared config and an ordinary
-  // clone's config.worktree keep rejecting every include.
-  const managed = gitDir !== commonDir;
+  // Only a Multica-managed worktree's own config.worktree may carry the identity
+  // include: a linked worktree (gitDir differs from commonDir) whose working
+  // tree, Git directory and common directory all live under the daemon-set
+  // MULTICA_TASK_WORKSPACES_ROOT. The shared config, ordinary clones, and an
+  // unmanaged `git worktree add` elsewhere keep rejecting every include.
+  const managed = gitDir !== commonDir && insideManagedRoot([repo, gitDir, commonDir]);
   return [
     ...boundedConfig(join(commonDir, 'config')),
     ...boundedConfig(join(gitDir, 'config.worktree'), false, managed),

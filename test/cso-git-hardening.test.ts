@@ -7,7 +7,7 @@ import { capture } from '../lib/cso/snapshot';
 import { childEnvironment, executable, git as readGitMetadata, runProcess } from '../lib/cso/process';
 
 const roots:string[]=[];
-afterEach(()=>{for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
+afterEach(()=>{delete process.env.MULTICA_TASK_WORKSPACES_ROOT;for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
 
 const fixtureGit=(repo:string,home:string)=>(...args:string[])=>{const result=spawnSync('/usr/bin/git',['-C',repo,...args],{encoding:'utf8',env:{HOME:home,PATH:'/usr/bin:/bin'},timeout:30_000});if(result.error||result.status!==0)throw new Error(`fixture git ${args.join(' ')} failed (status ${result.status}, signal ${result.signal}): ${result.error?.message??result.stderr}`);return result.stdout;};
 // Each fixture builds its own repository from Git; nothing is copied from a shared
@@ -179,6 +179,7 @@ describe('CSO Git config includes in managed worktrees',()=>{
     fs.writeFileSync(identity,'[user]\n\tname = "bot"\n\temail = "bot@example.test"\n',{mode:0o600});
     const setInclude=(value:string)=>fs.writeFileSync(path.join(gitDir,'config.worktree'),`# Multica identity defaults\n[include]\n\tpath = ${value}\n`);
     setInclude('multica-identity.config');
+    process.env.MULTICA_TASK_WORKSPACES_ROOT=root;
     return{...f,linked,gitDir,identity,setInclude};
   }
   const head=async(repo:string,root:string)=>(await readGitMetadata(repo,['rev-parse','HEAD'],root)).trim();
@@ -234,6 +235,18 @@ describe('CSO Git config includes in managed worktrees',()=>{
     fs.writeFileSync(path.join(gitDir,'config.worktree'),'[include]\n\tpath = local.config\n');
     await expect(readGitMetadata(repo,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
     expect(git).toBeDefined();
+  });
+
+  test.skipIf(process.platform==='win32')('rejects an include in an unmanaged linked worktree (outside the managed root, or no managed root)',async()=>{
+    const {root,linked}=managed(),elsewhere=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cso-unmanaged-root-')));
+    roots.push(elsewhere);
+    const rejected={code:'UNSAFE_PATH',message:'Repository Git config includes are not allowed during a security snapshot'};
+    process.env.MULTICA_TASK_WORKSPACES_ROOT=elsewhere;
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    process.env.MULTICA_TASK_WORKSPACES_ROOT='relative/root';
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    delete process.env.MULTICA_TASK_WORKSPACES_ROOT;
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
   });
 
   test.skipIf(process.platform==='win32')('rejects an include in the shared config of a linked worktree',async()=>{
