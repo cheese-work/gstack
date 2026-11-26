@@ -145,8 +145,9 @@ jobs:
   windows-scoped-shard:
     needs: windows-scope
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.files != '') || needs.windows-scope.outputs.files != '' }}
+    # CHE-9817: an upstream sync selects ~110 files, 2773 s of Windows seed. 60 min covers that run serially plus setup.
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -186,6 +187,8 @@ jobs:
       - name: Run the scoped Windows-safe test files
         env:
           FILES: ${{ inputs.files || needs.windows-scope.outputs.files }}
+          # Pack and time the shards by Windows-measured durations: the Linux seed is ~7x too fast (CHE-9817).
+          GSTACK_FREE_TEST_DURATIONS: scripts/free-test-durations-windows.json
           GSTACK_FREE_RETRY_FLAKY: '1'
           GSTACK_FLAKE_LEDGER: ${{ runner.temp }}/flake-ledger.jsonl
           TEMP: ${{ runner.temp }}

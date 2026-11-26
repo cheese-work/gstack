@@ -1,0 +1,1 @@
+The scoped Windows test job packs its shards by the Windows-measured durations and skips a selection the Windows seed predicts over 2400 s (the nightly Windows suite covers it), so a large upstream-sync pull request no longer times out all four shards (CHE-9817).

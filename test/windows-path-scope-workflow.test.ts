@@ -233,18 +233,20 @@ describe('the path-scoped Windows shard on pull requests', () => {
 
   const CAN_SELECT = CAN_RUN && !!Bun.which('jq');
   /** Filter, then select with a stub bun whose curated plan holds the given files. */
-  function scopeJob(dir: string, curated: string[]) {
+  function scopeJob(dir: string, curated: string[], seed: Record<string, number> = {}) {
     const filter = runStep(filterScript, dir);
     expect(filter.status, filter.stderr).toBe(0);
     const scope = fs.readFileSync(path.join(filter.temp, 'windows-scope'), 'utf8');
-    if (filter.outputs.windows !== 'true') return { windows: filter.outputs.windows, scope, files: undefined as string | undefined };
+    if (filter.outputs.windows !== 'true') return { windows: filter.outputs.windows, scope, files: undefined as string | undefined, summary: '' };
     const bin = path.join(filter.temp, 'bin');
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'bun'), '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --ci-plan ] && printf \'%s\' "$PLAN_JSON" > "$2"; shift; done\necho \'{"shard":[1]}\'\n', { mode: 0o755 });
     const plan = JSON.stringify({ version: 1, revision: 'r', shards: [{ shard: 1, predictedMs: 1, files: curated }], id: 'x' });
-    const select = runStep(selectScript, dir, { PATH: `${toShell(bin)}:${process.env.PATH}`, PLAN_JSON: plan }, filter.temp);
+    const seedFile = path.join(filter.temp, 'seed.json');
+    fs.writeFileSync(seedFile, JSON.stringify({ version: 1, durations: seed }));
+    const select = runStep(selectScript, dir, { PATH: `${toShell(bin)}:${process.env.PATH}`, PLAN_JSON: plan, GSTACK_FREE_TEST_DURATIONS: toShell(seedFile) }, filter.temp);
     expect(select.status, select.stderr).toBe(0);
-    return { windows: filter.outputs.windows, scope, files: select.outputs.files };
+    return { windows: filter.outputs.windows, scope, files: select.outputs.files, summary: select.summary };
   }
   const CURATED = ['test/hook-scripts.test.ts', 'test/review-risk-linear.test.ts', 'test/review-risk-routing.test.ts'];
 
@@ -288,6 +290,27 @@ describe('the path-scoped Windows shard on pull requests', () => {
         expect([files, job.windows, job.scope]).toEqual([files, 'false', '']);
       } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     }
+  });
+
+  // CHE-9817: an upstream sync selected 112 files, the job packed them by the Linux seed (~88 s a shard) and every
+  // shard hit the 360 s wall on Windows, where the same files run ~7x slower (Windows seed: 1363 s for the 65 it covers; 47 had no entry).
+  test('the scoped run packs by the Windows seed, not the Linux one', () => {
+    const run = scoped.jobs['windows-scoped-shard'].steps.find((s: any) => s.name === 'Run the scoped Windows-safe test files');
+    expect(run.env.GSTACK_FREE_TEST_DURATIONS).toBe('scripts/free-test-durations-windows.json');
+  });
+
+  // A large selection is never skipped: a green run with no Windows job proves nothing (CHE-9817).
+  test.skipIf(!CAN_SELECT)('CHE-9817: a selection the Windows seed predicts at 2600 s is still selected, not skipped', () => {
+    const files = ['test/sync-a.test.ts', 'test/sync-b.test.ts'];
+    const dir = prRepo(['bin/gstack-example', ...files]);
+    try {
+      const job = scopeJob(dir, files, { 'test/sync-a.test.ts': 1_300_000, 'test/sync-b.test.ts': 1_300_000 });
+      expect([job.windows, job.files]).toEqual(['true', files.join('\n')]);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('CHE-9817: the Windows job timeout leaves headroom for a 2773 s selection plus setup', () => {
+    expect(scoped.jobs['windows-scoped-shard']['timeout-minutes']).toBeGreaterThanOrEqual(60);
   });
 
   test.skipIf(!CAN_SELECT)('in scope but no changed Windows-safe test file: no files, so no Windows job', () => {
