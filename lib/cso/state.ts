@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { atomicWriteSync } from '../fs-atomic';
 import {
   CsoError,
+  type ErrorCode,
   RunReportV3,
   canonical,
   completeness,
@@ -682,6 +683,17 @@ export function discardAtomicNoReplaceTemp(
   }
 }
 
+/** A CSO filesystem fault that keeps its errno, so `privateRoot` can tell a read-only root from an unsafe one. */
+class StateFault extends CsoError {
+  constructor(
+    code: ErrorCode,
+    message: string,
+    readonly errno?: string,
+  ) {
+    super(code, message);
+  }
+}
+
 export function stateRoot(env: Record<string, string | undefined> = process.env): string {
   // The shared chain (lib/state-root.ts), made absolute. Security artifacts are intentionally outside every sync allowlist.
   return resolve(resolveStateRoot(env));
@@ -717,7 +729,7 @@ function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
       created = true;
     } catch (error: any) {
       if (error?.code !== 'EEXIST')
-        throw new CsoError(
+        throw new StateFault(
           'PERSISTENCE_FAILED',
           `Private state directory could not be created (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
           error?.code,
@@ -740,7 +752,7 @@ function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
     try {
       fs.chmodSync(p, 0o700);
     } catch (error: any) {
-      throw new CsoError(
+      throw new StateFault(
         'PERSISTENCE_FAILED',
         `Private state directory could not be secured (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
         error?.code,
@@ -776,7 +788,7 @@ function privateRootAt(container: string): string {
   try {
     fs.accessSync(root, fs.constants.W_OK);
   } catch (error: any) {
-    throw new CsoError(
+    throw new StateFault(
       'PERSISTENCE_FAILED',
       `Private state directory is not writable (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
       error?.code,
@@ -798,7 +810,7 @@ export function privateRoot(
   } catch (error) {
     const fallback = sandboxStateRoot(fallbackBase);
     if (
-      !(error instanceof CsoError) ||
+      !(error instanceof StateFault) ||
       error.code !== 'PERSISTENCE_FAILED' ||
       !READ_ONLY_ERRNOS.has(error.errno ?? '') ||
       hasExplicitRoot(env) ||

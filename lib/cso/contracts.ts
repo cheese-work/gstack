@@ -37,8 +37,6 @@ export class CsoError extends Error {
   constructor(
     public code: ErrorCode,
     message: string,
-    /** The errno behind a filesystem fault, when there is one. */
-    public errno?: string,
   ) {
     super(message);
     this.name = 'CsoError';
