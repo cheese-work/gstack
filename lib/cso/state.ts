@@ -12,7 +12,7 @@ import {
   sha256,
 } from './contracts';
 import { redact, sanitizeForJson, sanitizeHelperForJson } from './process';
-import { resolveStateRoot } from '../state-root';
+import { resolveStateRoot, STATE_ROOT_VARS } from '../state-root';
 import { PROCESS_IDENTITY, identityStartedAtMs, processIdentitySource } from './process-identity';
 const MAX_STATE_FILE = 1024 * 1024;
 
@@ -720,6 +720,7 @@ function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
         throw new CsoError(
           'PERSISTENCE_FAILED',
           `Private state directory could not be created (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
+          error?.code,
         );
     }
     if (cursor === p) leafCreated = created;
@@ -735,23 +736,86 @@ function ensureDirectory(path: string, hardenExistingLeaf: boolean): string {
   const s = fs.statSync(p);
   if (process.getuid && s.uid !== process.getuid())
     throw new CsoError('UNSAFE_PATH', 'Private directory must be owned by the current user');
-  if (hardenExistingLeaf || leafCreated) fs.chmodSync(p, 0o700);
+  if (hardenExistingLeaf || leafCreated) {
+    try {
+      fs.chmodSync(p, 0o700);
+    } catch (error: any) {
+      throw new CsoError(
+        'PERSISTENCE_FAILED',
+        `Private state directory could not be secured (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
+        error?.code,
+      );
+    }
+  }
   return p;
 }
 /** The supplied leaf is CSO-owned. Existing ancestors are validated, never mutated. */
 export function secureDirectory(path: string): string {
   return ensureDirectory(path, true);
 }
-export function privateRoot(): string {
-  const container = ensureDirectory(stateRoot(), false);
-  return secureDirectory(join(container, 'security', 'cso'));
+/** Env vars that name the state root on purpose. An explicit choice is never replaced by the sandbox fallback. */
+const EXPLICIT_ROOT_VARS = [...STATE_ROOT_VARS, 'CLAUDE_PLUGIN_DATA'] as const;
+const READ_ONLY_ERRNOS = new Set(['EROFS', 'EACCES', 'EPERM']);
+/**
+ * Private state root for a sandbox whose default `$HOME/.gstack` is read-only (a Codex `workspace-write`
+ * sandbox mounts it read-only but leaves `/tmp` writable). `/tmp` is sticky, so the writable-ancestor guard
+ * accepts it; the leaf is per-uid and must be owned by the current user, so a directory another user
+ * pre-creates there is rejected (UNSAFE_PATH) instead of used. Never offered on Windows.
+ */
+export function sandboxStateRoot(base = '/tmp'): string | null {
+  const uid = process.getuid?.();
+  if (process.platform === 'win32' || uid === undefined) return null;
+  return join(base, `gstack-cso-${uid}`);
+}
+function hasExplicitRoot(env: Record<string, string | undefined>): boolean {
+  return EXPLICIT_ROOT_VARS.some((name) => Boolean(env[name]));
+}
+function privateRootAt(container: string): string {
+  const root = secureDirectory(join(ensureDirectory(container, false), 'security', 'cso'));
+  // A directory that already exists on a read-only mount passes every check above and only fails at the first write.
+  try {
+    fs.accessSync(root, fs.constants.W_OK);
+  } catch (error: any) {
+    throw new CsoError(
+      'PERSISTENCE_FAILED',
+      `Private state directory is not writable (${error?.code ?? 'unknown error'}); set GSTACK_HOME to a writable directory`,
+      error?.code,
+    );
+  }
+  return root;
+}
+/**
+ * The CSO private directory. When the default root cannot be written (EROFS/EACCES/EPERM) and no state-root
+ * variable was set, retry once under `sandboxStateRoot()`. Every ancestor and ownership check still runs
+ * there, and an unsafe ancestor (UNSAFE_PATH) is never retried.
+ */
+export function privateRoot(
+  env: Record<string, string | undefined> = process.env,
+  fallbackBase?: string,
+): string {
+  try {
+    return privateRootAt(stateRoot(env));
+  } catch (error) {
+    const fallback = sandboxStateRoot(fallbackBase);
+    if (
+      !(error instanceof CsoError) ||
+      error.code !== 'PERSISTENCE_FAILED' ||
+      !READ_ONLY_ERRNOS.has(error.errno ?? '') ||
+      hasExplicitRoot(env) ||
+      !fallback
+    )
+      throw error;
+    return privateRootAt(fallback);
+  }
 }
 export function assertStateOutside(repo: string): void {
   const source = fs.realpathSync(repo),
-    candidate = resolve(stateRoot(), 'security', 'cso');
-  const relation = relative(source, candidate);
-  if (relation === '' || (!relation.startsWith(`..${sep}`) && relation !== '..' && !isAbsolute(relation)))
-    throw new CsoError('UNSAFE_PATH', 'CSO private state must be outside the audited repository');
+    fallback = sandboxStateRoot();
+  for (const root of fallback ? [stateRoot(), fallback] : [stateRoot()]) {
+    const relation = relative(source, resolve(root, 'security', 'cso'));
+    if (relation === '' || (!relation.startsWith(`..${sep}`) && relation !== '..' && !isAbsolute(relation)))
+      throw new CsoError('UNSAFE_PATH', 'CSO private state must be outside the audited repository');
+  }
 }
 export function repoId(repo: string): string {
   return sha256(fs.realpathSync(repo)).slice(0, 24);
