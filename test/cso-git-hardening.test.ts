@@ -7,7 +7,7 @@ import { capture } from '../lib/cso/snapshot';
 import { childEnvironment, executable, git as readGitMetadata, runProcess } from '../lib/cso/process';
 
 const roots:string[]=[];
-afterEach(()=>{for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
+afterEach(()=>{delete process.env.MULTICA_TASK_WORKSPACES_ROOT;for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
 
 const fixtureGit=(repo:string,home:string)=>(...args:string[])=>{const result=spawnSync('/usr/bin/git',['-C',repo,...args],{encoding:'utf8',env:{HOME:home,PATH:'/usr/bin:/bin'},timeout:30_000});if(result.error||result.status!==0)throw new Error(`fixture git ${args.join(' ')} failed (status ${result.status}, signal ${result.signal}): ${result.error?.message??result.stderr}`);return result.stdout;};
 // Each fixture builds its own repository from Git; nothing is copied from a shared
@@ -165,5 +165,110 @@ describe('CSO Git metadata hardening',()=>{
     const race=replaceWithSymlinkAfterLstat(common,oversized);
     try{await expect(runProcess(executable('git'),['--no-optional-locks','-C',linked,'rev-parse','--is-inside-work-tree'],{cwd:root,env:childEnvironment(root),raw:true})).rejects.toMatchObject({code:'SNAPSHOT_RACE'});}finally{race.patched.mockRestore();}
     expect(race.wasSwapped()).toBe(true);
+  });
+});
+
+describe('CSO Git config includes in managed worktrees',()=>{
+  // Mirrors the Multica managed worktree: extensions.worktreeConfig, config.worktree with a relative
+  // [include], and the included identity file next to it in the worktree's own Git admin directory.
+  function managed(){
+    const f=fixture(),{root,repo,git}=f,linked=path.join(root,'linked');
+    git('config','extensions.worktreeConfig','true');git('worktree','add','-q','-b','managed-test',linked);
+    const marker=fs.readFileSync(path.join(linked,'.git'),'utf8').trim().replace(/^gitdir:\s*/,''),gitDir=fs.realpathSync(path.resolve(linked,marker));
+    const identity=path.join(gitDir,'multica-identity.config');
+    fs.writeFileSync(identity,'[user]\n\tname = "bot"\n\temail = "bot@example.test"\n',{mode:0o600});
+    const setInclude=(value:string)=>fs.writeFileSync(path.join(gitDir,'config.worktree'),`# Multica identity defaults\n[include]\n\tpath = ${value}\n`);
+    setInclude('multica-identity.config');
+    process.env.MULTICA_TASK_WORKSPACES_ROOT=root;
+    return{...f,linked,gitDir,identity,setInclude};
+  }
+  const head=async(repo:string,root:string)=>(await readGitMetadata(repo,['rev-parse','HEAD'],root)).trim();
+
+  test.skipIf(process.platform==='win32')('accepts a relative include that resolves inside the worktree Git directory (CHE-9982)',async()=>{
+    const {root,linked,git}=managed();
+    expect(await head(linked,root)).toBe(git('rev-parse','HEAD').trim());
+  });
+
+  test.skipIf(process.platform==='win32')('still rejects an include that points outside the Git directory',async()=>{
+    const {root,linked,gitDir,setInclude}=managed(),outside=path.join(root,'outside.conf');
+    fs.writeFileSync(outside,'[core]\n\tpager = decoy\n');
+    for(const value of[outside,'../../../outside.conf','../outside.conf','sub/../../outside.conf','~/x.conf'])
+      {setInclude(value);await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH',message:'Repository Git config includes are not allowed during a security snapshot'});}
+    expect(gitDir).toContain(root);
+  });
+
+  test.skipIf(process.platform==='win32')('rejects includeIf, subsection, keyed and quoted include forms',async()=>{
+    const {root,linked,gitDir}=managed(),config=path.join(gitDir,'config.worktree');
+    for(const body of['[includeIf "gitdir:/"]\n\tpath = multica-identity.config\n','[include "x"]\n\tpath = multica-identity.config\n','[include]\n\tpath = "multica-identity.config"\n','[include]\n\tpath = multica-identity.config\n\tfoo = bar\n','[include]\n\tpath = multica-identity.config\n[includeIf "gitdir:/"]\n\tpath = multica-identity.config\n','[include] path = multica-identity.config\n']){
+      fs.writeFileSync(config,body);
+      await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+    }
+  });
+
+  test.skipIf(process.platform==='win32')('rejects a symlinked, missing or nested-include target',async()=>{
+    const {root,linked,gitDir,identity}=managed(),outside=path.join(root,'outside.conf');
+    fs.writeFileSync(outside,'[core]\n\tpager = decoy\n');
+    fs.rmSync(identity);fs.symlinkSync(outside,identity);
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+    fs.rmSync(identity);
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+    fs.writeFileSync(identity,`[include]\n\tpath = ${outside}\n`);
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+    expect(gitDir).toContain(root);
+  });
+
+  test.skipIf(process.platform==='win32')('does not accept an include that targets a file in the working tree',async()=>{
+    const {root,linked,gitDir,setInclude}=managed();
+    fs.writeFileSync(path.join(linked,'tracked-config'),'[core]\n\tpager = decoy\n');
+    setInclude(path.relative(gitDir,path.join(linked,'tracked-config')));
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+  });
+
+  test.skipIf(process.platform==='win32')('rejects an include in an ordinary clone, even to a file inside .git',async()=>{
+    const {root,repo,git}=fixture(),gitDir=path.join(repo,'.git'),rejected={code:'UNSAFE_PATH',message:'Repository Git config includes are not allowed during a security snapshot'};
+    fs.writeFileSync(path.join(gitDir,'local.config'),'[user]\n\tname = "bot"\n');
+    // Shared config of an ordinary clone.
+    fs.appendFileSync(path.join(gitDir,'config'),'[include]\n\tpath = local.config\n');
+    await expect(readGitMetadata(repo,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    // config.worktree of the main worktree (gitDir === commonDir) is not a managed worktree either.
+    fs.writeFileSync(path.join(gitDir,'config'),'[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n');
+    fs.writeFileSync(path.join(gitDir,'config.worktree'),'[include]\n\tpath = local.config\n');
+    await expect(readGitMetadata(repo,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    expect(git).toBeDefined();
+  });
+
+  test.skipIf(process.platform==='win32')('rejects an include in an unmanaged linked worktree (outside the managed root, or no managed root)',async()=>{
+    const {root,linked}=managed(),elsewhere=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cso-unmanaged-root-')));
+    roots.push(elsewhere);
+    const rejected={code:'UNSAFE_PATH',message:'Repository Git config includes are not allowed during a security snapshot'};
+    process.env.MULTICA_TASK_WORKSPACES_ROOT=elsewhere;
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    process.env.MULTICA_TASK_WORKSPACES_ROOT='relative/root';
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+    delete process.env.MULTICA_TASK_WORKSPACES_ROOT;
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject(rejected);
+  });
+
+  test.skipIf(process.platform==='win32')('rejects an include in the shared config of a linked worktree',async()=>{
+    const {root,linked,gitDir}=managed(),common=fs.realpathSync(path.resolve(gitDir,fs.readFileSync(path.join(gitDir,'commondir'),'utf8').trim()));
+    fs.writeFileSync(path.join(common,'local.config'),'[user]\n\tname = "bot"\n');
+    fs.appendFileSync(path.join(common,'config'),'[include]\n\tpath = local.config\n');
+    await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'UNSAFE_PATH'});
+  });
+
+  test.skipIf(process.platform==='win32')('detects the included file changing during a metadata operation',async()=>{
+    const {root,linked,identity}=managed();
+    const original=fs.lstatSync;let hits=0;
+    const patched=spyOn(fs,'lstatSync').mockImplementation(((candidate:any,options?:any)=>{
+      const result=options===undefined?original(candidate):original(candidate,options);
+      if(path.resolve(String(candidate))===identity&&++hits===3)fs.writeFileSync(identity,'[user]\n\tname = "swapped"\n');
+      return result;
+    }) as typeof fs.lstatSync);
+    try{await expect(readGitMetadata(linked,['rev-parse','HEAD'],root)).rejects.toMatchObject({code:'SNAPSHOT_RACE'});}finally{patched.mockRestore();}
+  });
+
+  test.skipIf(process.platform==='win32')('snapshot capture succeeds in a managed worktree',async()=>{
+    const {linked,runDir}=managed();
+    await expect(capture(linked,runDir)).resolves.toBeDefined();
   });
 });
