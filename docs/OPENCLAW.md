@@ -118,7 +118,7 @@ environment variable should be set. gstack detects this and adjusts:
   irreversible options are never auto-chosen — the conservative choice wins
   and gets recorded in the completion report)
 - Suppresses interactive-onboarding instruction blocks at emission (upgrade
-  checks, telemetry prompts, feature discovery, routing injection, tips), so
+  checks, telemetry prompts, feature discovery, tips), so
   one-time prompts survive intact for the next human session
 - Suppresses the Conductor prose signal (`CONDUCTOR_SESSION: true`) — a
   spawned session inside a Conductor workspace auto-chooses instead of
@@ -194,8 +194,8 @@ registered as a short entry that tells the agent to read the skill's full
 reads in pages (`.gstack-skills/` under `--skills all`).
 Install, verify and remove: [hosts.md](hosts.md#agent-harnesses).
 Agents in OpenClaw read gstack's skills but rarely run their start command, so
-there is an opt-in [start hook](hosts.md#start-hook): `gstack-harness register
-openclaw --start-hook` adds a `gstack-start` plugin that puts a one-line note on
+there is a [start hook](hosts.md#start-hook), on by default for a new registration (`gstack-harness register
+openclaw --no-start-hook` turns it off; an upgrade keeps an existing off): it adds a `gstack-start` plugin that puts a one-line note on
 every user turn, and grants it the conversation access OpenClaw requires for
 `before_prompt_build` through `openclaw config set`.
 

@@ -3,7 +3,7 @@
  * gstack-ship-queue — the shared merge queue, one subcommand per protocol
  * step (field list 2, W1; docs/ship-policy.md#run-a-shared-merge-queue).
  *
- *   gstack-ship-queue ready --pr <n> [--pregate <pregate.json>] [--gate-exit <rc> --gate-log <file>]
+ *   gstack-ship-queue ready --pr <n> [--pregate <pregate.json>] [--trail <decisions.tsv>] [--gate-exit <rc> --gate-log <file>]
  *                           (refused with QUEUE_RECEIPT_MISSING|STALE unless the PR body carries /ship's receipt for HEAD)
  *   gstack-ship-queue stamp --pr <n> --version <X> --expect-gated <sha> --expect-base <sha>
  *                           [--expect-order <pr,...>] [--allow-repo-commands] [--gate-exit <rc> --gate-log <file>]
@@ -19,10 +19,11 @@
  *   gstack-ship-queue land --pr <n> [--dry-run] [--no-wait] [--break-lock [--break-train-lock]]   (the merge step; lib/ship-queue-land.ts)
  *   gstack-ship-queue land --pr <n> --repair                    (after QUEUE_LAND_DRIFT: open the outside merge's release PR)
  *   gstack-ship-queue land --census
+ *   gstack-ship-queue count [--authors <login,...>]   (R119: finished PRs waiting to land, one gh call; lib/ship-queue-count.ts)
  *   gstack-ship-queue train build|status|verdict|bisect|rebuild|watch|prune ...   (merge trains; train --help)
  *   gstack-ship-queue wave plan|build|status|settle ...   (wave PRs: 3-6 same-area PRs in one train slot; wave --help)
  *
- * Every subcommand takes --base <branch> (default lib/default-base.ts) and
+ * Every subcommand takes --base <branch> (default: ready's --pr PR base, else lib/default-base.ts) and
  * ends with GSTACK_RESULT: skill=ship-queue status=complete|refused run=<path>.
  * gstack-restamp stays the primitive. Nothing here pushes, except land, ready
  * under changelog_fragments (its READY receipt note), and under a
@@ -47,9 +48,11 @@ logShipCall('gstack-ship-queue');
 
 const HELP = `gstack-ship-queue — the shared merge queue's protocol steps (docs/ship-policy.md#run-a-shared-merge-queue)
 
-  ready --pr <n> [--pregate <file>] [--gate-exit <rc> --gate-log <file>]
+  ready --pr <n> [--pregate <file>] [--trail <decisions.tsv>] [--gate-exit <rc> --gate-log <file>]
                                            READY #<n> <head> STAMP_VERSION=<X|unstamped>, CI at that head, PREGATE, gate state,
-                                           SHIP_RECEIPT (refused unless the PR body carries /ship's receipt for that head)
+                                           SHIP_RECEIPT (refused unless the PR body carries /ship's receipt for that head),
+                                           TRIAL_MERGES for each open PR sharing a file, and the Attention line: a risk-class
+                                           receipt names the --trail's newest trail-read row, or prints MISSING: cross-family trail read
   stamp --pr <n> --version <X> --expect-gated <sha> --expect-base <sha> [--expect-order <pr,...>] [--allow-repo-commands]
         [--gate-exit <rc> --gate-log <file>]
                                            restamp, commit and prove: QUEUE_STAMP: <pr> <X> head= gated= tree= receipt=
@@ -84,13 +87,17 @@ const HELP = `gstack-ship-queue — the shared merge queue's protocol steps (doc
   land --pr <n> --repair                   after QUEUE_LAND_DRIFT: open the PR that gives the merge outside land its own
                                            release; /ship and land it, which releases the lock
   land --census                            what land would do with every open PR (read-only)
+  count [--authors <login,...>]            finished PRs waiting to land, from one gh call: QUEUE_COUNT (count, how many waited 24h
+                                           or more, the oldest wait), a FINISHED line each, and DRAIN when more than 6 wait or one
+                                           has waited 24h (docs/captain.md#drain-the-queue); finished = by an author (default
+                                           garrytan,capy-ai,garrytan-agents), on the base, not a draft or conflicting, green at its head
   train build|status|verdict|bisect|rebuild|watch|prune ...
                                            merge trains, when the base policy declares a train block (train --help;
                                            docs/ship-policy.md#run-a-merge-train); ready then takes --screen|--no-screen
   wave plan|build|status|settle ...        wave PRs under a train policy: 3-6 same-area PRs in one slot and one version
                                            (wave --help; docs/ship-policy.md#wave-prs)
 
---base <branch>: base branch (default: origin/HEAD unless it names the checked-out branch, else the PR's base, origin/main). Nothing here pushes, except land (the stamp commit and the
+--base <branch>: base branch (default: for ready, the base of the PR --pr names; otherwise origin/HEAD unless it names the checked-out branch, else the PR's base, origin/main; ready refuses a --base that is not its PR's base). Nothing here pushes, except land (the stamp commit and the
 refs/notes/gstack-land lock), ready under changelog_fragments (its READY receipt note) and merge trains.
 ${exitTableHelp()}`;
 
@@ -199,8 +206,14 @@ async function main(argv: string[]): Promise<number> {
   if (probe.status !== 0) return usage('not inside a git repository');
   const repoRoot = probe.stdout.trim();
   const gh = (a: string[]) => { const r = ghSpawnSync(a, { cwd: repoRoot, encoding: 'utf8', timeout: 60_000 }); return { ok: r.status === 0, out: r.stdout ?? '', err: r.stderr ?? (r.error ? String(r.error.message) : '') }; };
-  const ctx: QueueContext = { repoRoot, base: resolveBaseBranch(repoRoot, flag(args, '--base')), gh };
   const pr = flag(args, '--pr');
+  const explicitBase = flag(args, '--base');
+  let prBase: string | undefined;
+  if (pr && /^\d+$/.test(pr) && cmd === 'ready') {
+    const view = gh(['pr', 'view', pr, '--json', 'baseRefName']);
+    try { prBase = view.ok ? JSON.parse(view.out).baseRefName || undefined : undefined; } catch {}
+  }
+  const ctx: QueueContext = { repoRoot, base: resolveBaseBranch(repoRoot, explicitBase ?? prBase), gh };
   if (cmd === 'gate-ahead') return gateAhead(ctx, args);
   if (cmd === 'train') {
     const train = await import('../crew/lib/ship-queue-train-cli');
@@ -209,6 +222,7 @@ async function main(argv: string[]): Promise<number> {
     if (loaded && !('message' in loaded) && loaded.policy.merge === 'direct') return finish(`train ${args[0]}`, { ok: false, lines: [], run: 'none', failure: { code: 'QUEUE_NOT_READY', message: 'the base policy sets merge: direct, so trains are off', fix: 'land each READY PR with gstack-ship-queue land --pr <n> --pin <sha> (docs/ship-policy.md#land-direct)' } });
     return train.trainMain(ctx, args);
   }
+  if (cmd === 'count') return finish('count', (await import('../lib/ship-queue-count')).queueCount(ctx, { authors: flag(args, '--authors')?.split(',').map(s => s.trim()).filter(Boolean) }));
   if (cmd === 'wave') return (await import('../crew/lib/ship-queue-wave')).waveMain(ctx, args);
   if (cmd === 'verify' && flag(args, '--post-merge') !== undefined) return (await import('../crew/lib/ship-queue-train-cli')).postMergeMain(ctx, args);
   if (cmd === 'land') {
@@ -232,12 +246,13 @@ async function main(argv: string[]): Promise<number> {
   if (gateExit !== undefined && !/^-?\d+$/.test(gateExit)) return usage('--gate-exit needs an exit code');
   const gate = { gateExit: gateExit === undefined ? undefined : Number(gateExit), gateLog: flag(args, '--gate-log') };
   if (cmd === 'ready') {
+    if (explicitBase && prBase && prBase !== ctx.base) return finish('ready', { ok: false, lines: [], run: 'none', failure: { code: 'QUEUE_NOT_READY', message: `#${pr} targets ${prBase}, not ${ctx.base}, so a receipt reviewed against ${ctx.base} does not cover it`, fix: `rerun ready without --base, or with --base ${prBase}` } });
     const unfetched = refreshBase(ctx);
     const loaded = loadBasePolicy(ctx);
-    if (!('message' in loaded) && loaded.policy.train) return (await import('../crew/lib/ship-queue-train-cli')).readyMain(ctx, args, { pr, pregate: flag(args, '--pregate'), ...gate });
+    if (!('message' in loaded) && loaded.policy.train) return (await import('../crew/lib/ship-queue-train-cli')).readyMain(ctx, args, { pr, pregate: flag(args, '--pregate'), trail: flag(args, '--trail'), ...gate });
     if (unfetched) return finish('ready', { ok: false, lines: [], run: 'none', failure: unfetched });
     if (['--screen', '--no-screen', '--broad'].some(f => args.includes(f))) process.stderr.write('gstack-ship-queue ready: --screen/--no-screen/--broad ignored: the base policy declares no train block\n');
-    return finish('ready', ready(ctx, { pr, pregate: flag(args, '--pregate'), ...gate }));
+    return finish('ready', ready(ctx, { pr, pregate: flag(args, '--pregate'), trail: flag(args, '--trail'), ...gate }));
   }
   if (cmd === 'stamp') {
     const version = flag(args, '--version');

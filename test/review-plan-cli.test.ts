@@ -77,6 +77,20 @@ describe('gstack-review-plan', () => {
     const client = run(repo({ ...ui, 'App/Client.swift': 'final class Client {\n  func load(_ r: URLRequest) async throws -> Data { try await URLSession.shared.data(for: r).0 }\n}\n' }), []);
     expect(client.stdout).toMatch(/^REVIEW_DEPTH: full .*risk:security/m);
   });
+  // Value: protects=an iOS PR that writes or deletes users' files on the device, or reads their calendars, plans full even when it
+  //   also touches Markdown and tests, while a SwiftUI view that reads a UserDefaults setting stays light; fails_when=the Swift
+  //   user-data rules stop reaching gstack-review-plan; why_new=GST-3052: ghome#10 (spill files written and deleted) and ghome#31
+  //   (calendar choices, read through EventKit) planned light (GSTA-601); seam=gstack-review-plan on a real repo; no_claim=what the readers find
+  test('a Swift diff that writes and deletes spill files, or reads calendars, plans full; a SwiftUI settings view stays light (GST-3052)', () => {
+    const view = 'import SwiftUI\nstruct SettingsView: View {\n  @AppStorage("speaksAnswers") private var speaksAnswers = true\n  var body: some View { Toggle("Speak answers", isOn: $speaksAnswers) }\n}\n';
+    const shared = { 'DESIGN.md': '# Design\n', 'App/Home/SettingsView.swift': view, 'Tests/AppTests/SettingsTests.swift': 'import XCTest\n' };
+    const control = run(repo({ ...shared, 'App/Home/PickerModel.swift': 'final class PickerModel {\n  let defaults: UserDefaults\n  init(defaults: UserDefaults = .standard) { self.defaults = defaults }\n  var chosen: Data? { defaults.data(forKey: "picker.chosen") }\n  func save(_ blob: Data) { defaults.set(blob, forKey: "picker.chosen") }\n}\n' }), []);
+    expect(control.stdout).toMatch(/^REVIEW_DEPTH: light /m);
+    const spill = 'import Foundation\npublic struct DraftSpill {\n  public let file: URL\n  public func reserve(_ size: Int) throws {\n    guard FileManager.default.createFile(atPath: file.path, contents: Data(count: size)) else { throw CocoaError(.fileWriteUnknown) }\n  }\n  public func discard() { try? FileManager.default.removeItem(at: file) }\n}\n';
+    expect(run(repo({ ...shared, 'Packages/Core/Sources/Core/Capture/DraftSpill.swift': spill }), []).stdout).toMatch(/^REVIEW_DEPTH: full .*risk:data/m);
+    const agenda = 'import EventKit\nfinal class AgendaSource {\n  private let events = EKEventStore()\n  func calendarNames() -> [String] { events.calendars(for: .event).map(\\.title) }\n}\n';
+    expect(run(repo({ ...shared, 'App/Meeting/AgendaSource.swift': agenda }), []).stdout).toMatch(/^REVIEW_DEPTH: full .*risk:data/m);
+  });
   test('a docs diff that publishes numbers keeps the outside voice', () => {
     const r = run(repo({ 'docs/bench.md': 'Median latency fell 42% to 180 ms.\n' }), []);
     expect(r.stdout).toContain('DISPATCH: outside-voice outside-voice effort=host');
@@ -96,10 +110,12 @@ describe('gstack-review-plan', () => {
     expect(host.dispatches.find((d: any) => d.role === 'adversarial-native').effort).toBe('full');
     expect(run(r, ['--no-tiers', '--depth-floor', 'standard']).stdout).toContain('DISPATCH: specialist batched effort=host checklists=testing,security,state-machines');
   });
-  test('a below-floor fix after pass 1 plans one fix-check', () => {
+  test('a below-floor fix after pass 1 plans the full pass on the range as round 2, never a fix-check (GST-3562 A)', () => {
     const r = run(repo({ 'src/a.ts': 'export const a = 1;\n' }), ['--pass', '1', '--last', 'full', '--fixed-below']);
-    expect(r.stdout).toContain('next=fix-check dispatches=1');
-    expect(r.stdout).toContain('DISPATCH: fix-check fix-check effort=full');
+    expect(r.stdout).toMatch(/^REVIEW_PLAN: class=code pass=2 next=full dispatches=2 .*reason="below-floor fixes changed code after round 1: round 2 is a full pass on the range, never a fix-check \(R51, GST-3562 A\)"$/m);
+    expect(r.stdout).toContain('DISPATCH: specialist batched effort=full checklists=testing,security,state-machines,red-team');
+    expect(r.stdout).toContain('DISPATCH: adversarial-native adversarial effort=full');
+    expect(r.stdout).not.toContain('DISPATCH: fix-check');
   });
   // Value: protects=the CLI the ship loop calls after a fix-check prints NEXT: done when the fix-check was clean and only below-floor fixes came before it; fails_when=`--last fix-check --fixed-below` prints NEXT: stop with a blocking-finding reason (GSTA-167 replay 8G on #34);
   //   why_new=no CLI case covered --last fix-check; seam=bin/gstack-review-plan (lib/review-depth.ts stays at its no-loss pin); no_claim=the fix-check reviewer's verdict
@@ -131,16 +147,19 @@ describe('gstack-review-plan', () => {
       add(`Owner accepts the stop after the fix-check (review_loop_exception ${stopHead.slice(0, 12)})`), add('Approve the plan for the README rewrite'), 'a-000000000000'];
     const plan = (a: string[]) => spawnSync(BIN, ['--base', 'main', '--gate-tagged', '0', ...a], { cwd: r.dir, encoding: 'utf8', timeout: 60_000, env });
     const capStop = ['--pass', '2', '--last', 'full', '--fixed-blocking', '--range-base', passHead];
-    expect(plan(capStop).stdout).toContain('NEXT: stop');
+    expect(plan(capStop).stdout).toContain('NEXT: full (read-only final review (R51)');
     const granted = plan([...capStop, '--grant', id]);
     expect(granted.status, granted.stderr).toBe(0);
-    expect(granted.stdout).toContain(`NEXT: fix-check (the owner's grant ${id}`);
-    expect(granted.stdout).toContain('DISPATCH: fix-check fix-check effort=full');
+    expect(granted.stdout).toContain('NEXT: full (read-only final review (R51)');
+    expect(granted.stdout).not.toContain('DISPATCH: fix-check');
+    const afterFixCheck = ['--pass', '1', '--last', 'fix-check', '--fix-checks', '1', '--fixed-blocking', '--range-base', passHead];
+    expect(plan([...afterFixCheck, '--grant', id]).stdout).toContain(`NEXT: fix-check (the owner's grant ${id}`);
+    expect(plan([...afterFixCheck, '--grant', id]).stdout).toContain('DISPATCH: fix-check fix-check effort=full');
     commit(3);
-    expect(plan([...capStop, '--grant', id]).stdout).toContain(`NEXT: fix-check (the owner's grant ${id}`);
+    expect(plan([...afterFixCheck, '--grant', id]).stdout).toContain(`NEXT: fix-check (the owner's grant ${id}`);
     expect(plan(['--pass', '2', '--last', 'fix-check', '--fixed-blocking', '--range-base', passHead, '--grant', id]).stdout).toContain('NEXT: stop');
     for (const other of refusedIds) {
-      const refused = plan([...capStop, '--grant', other]);
+      const refused = plan([...afterFixCheck, '--grant', other]);
       expect([other, refused.status, refused.stdout]).toEqual([other, 3, '']);
       expect(refused.stderr).toContain(`--grant ${other}`);
     }
@@ -372,7 +391,7 @@ describe('gstack-review-plan: review depth', () => {
   });
 });
 
-describe('gstack-review-plan: the scoped second pass (GSTA-152 D6)', () => {
+describe('gstack-review-plan: the full round 2 on a small fix range (GSTA-152 D6, GST-3562 part 3)', () => {
   const code = (n: number, tag = 'v') => Array.from({ length: n }, (_, i) => `export const ${tag}${i} = ${i};`).join('\n') + '\n';
   function fixed(lines: number): { r: { dir: string; state: string }; rangeBase: string } {
     const r = repo({ 'src/a.ts': code(80) });
@@ -384,17 +403,17 @@ describe('gstack-review-plan: the scoped second pass (GSTA-152 D6)', () => {
   }
   const pass2 = ['--pass', '1', '--last', 'full', '--fixed-blocking', '--adversarial-ran', '--pass1-depth', 'standard'];
   const full1 = ['--pass', '1', '--last', 'full', '--fixed-blocking', '--adversarial-ran', '--pass1-depth', 'full'];
-  test('--range-base with a small fix range plans NEXT: scoped with a fix-check and the Red Team, and counts it as pass 2', () => {
+  test('--range-base with a small fix range plans a full pass 2 with the batched specialist, the Red Team and the native adversarial, and no fix-check', () => {
     const { r, rangeBase } = fixed(24);
     const out = run(r, [...pass2, '--range-base', rangeBase]).stdout;
-    expect(out).toMatch(/^REVIEW_PLAN: class=code pass=2 next=scoped dispatches=3 /m);
+    expect(out).toMatch(/^REVIEW_PLAN: class=code pass=2 next=full dispatches=3 /m);
     expect(out).toContain(`FIX_RANGE: runtime_lines=24 base=${rangeBase}`);
-    expect(out).toMatch(/^NEXT: scoped \(a blocking finding was fixed on a light diff with 24 runtime lines in the fix range/m);
-    expect(out).toContain('DISPATCH: fix-check fix-check effort=full');
+    expect(out).toMatch(/^NEXT: full \(a blocking finding was fixed on a light diff with 24 runtime lines in the fix range: full pass on the range, never a scoped pass, so every reader is in the pass record \(GST-3562\)\)$/m);
+    expect(out).not.toContain('DISPATCH: fix-check');
+    expect(out).toMatch(/^DISPATCH: specialist batched effort=\S+ checklists=/m);
     expect(out).toContain('DISPATCH: red-team red-team effort=full');
     expect(out).toContain('DISPATCH: adversarial-native adversarial effort=full');
-    expect(out).not.toContain('DISPATCH: specialist');
-    expect(JSON.parse(run(r, [...pass2, '--range-base', rangeBase, '--json']).stdout)).toMatchObject({ next: { step: 'scoped' }, fix_range: { base: rangeBase, runtime_lines: 24 } });
+    expect(JSON.parse(run(r, [...pass2, '--range-base', rangeBase, '--json']).stdout)).toMatchObject({ next: { step: 'full', keepReader: true, rangeReaders: true }, fix_range: { base: rangeBase, runtime_lines: 24 } });
   });
   test('a 151-line range, no --range-base, an unknown range base and uncommitted fixes keep the full pass 2', () => {
     const big = fixed(151);

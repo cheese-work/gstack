@@ -6,7 +6,7 @@
  * (bin/gstack-release-stamp); classifyRelease is the one test of "this head is the release stamp of its merge base"
  * that land --pin and the Version Gate both apply.
  */
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from './spawn-sync';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -14,6 +14,7 @@ import { parseChangelog } from './changelog-check';
 import { effectiveBump, readFragments } from './changelog-fragments';
 import { restamp, versionAtRef, type RestampResult } from './restamp';
 import { withAgentNotes } from './agent-notes';
+import { handOff, hostPublishes } from './host-publish';
 import { foldSections } from './pr-body-shape';
 import { matchesAny, type ShipPolicy } from './ship-policy';
 import { buildReceipt } from './tree-receipt';
@@ -108,6 +109,7 @@ export function classifyRelease(o: { repoRoot: string; policy: ShipPolicy; merge
 export interface OpenOptions {
   repoRoot: string; base: string; dryRun?: boolean; now?: Date;
   gh?: (args: string[], cwd: string) => { ok: boolean; out: string; err: string };
+  env?: Record<string, string | undefined>;
 }
 export type OpenResult =
   | { ok: true; version: string; branch: string; head?: string; pr?: string; url?: string; lines: string[] }
@@ -121,7 +123,7 @@ const defaultGh = (args: string[], cwd: string) => {
 /**
  * Stamp a fresh worktree of origin/<base> with gstack-restamp --release, commit only the stamped files (detached, so no
  * local branch is left behind), force-push the commit to release/<version> (a reopen after RELEASE_STAMP_INVALID
- * replaces the old release branch) and open the release PR. The Captain lands it with gstack-ship-queue land --pr <n> --pin <head> once its
+ * replaces the old release branch) and open the release PR, or on a reopen rewrite the open PR's body to the new stamp's. The Captain lands it with gstack-ship-queue land --pr <n> --pin <head> once its
  * checks are green; the stable cut then tags the new version. --dry-run stamps and prints the diff, and creates nothing.
  */
 export function openRelease(o: OpenOptions): OpenResult {
@@ -166,8 +168,28 @@ export function openRelease(o: OpenOptions): OpenResult {
     ].join('\n'));
     const posted = foldSections(body);
     const open = gh(['pr', 'list', '--head', branch, '--state', 'open', '--json', 'url,isCrossRepository', '--jq', '[.[] | select(.isCrossRepository | not)][0].url // ""'], dir);
-    const pr = open.ok && open.out.trim() ? open : gh(['pr', 'create', '--base', o.base, '--head', branch, '--title', `v${version} release`, '--body', posted], dir);
+    const reopened = open.ok && !!open.out.trim();
+    if (!reopened && hostPublishes(o.env)) {
+      const view = gh(['repo', 'view', '--json', 'nameWithOwner,url'], dir);
+      let dest: { repo: string; host: string } | undefined;
+      try { const v = JSON.parse(view.out); dest = { repo: String(v.nameWithOwner ?? ''), host: new URL(String(v.url)).host }; } catch { dest = undefined; }
+      if (!view.ok || !dest?.repo) return fail('RELEASE_STAMP_INVALID', `cannot resolve the repository the release PR belongs to (gh repo view --json nameWithOwner,url: ${view.err.trim().split('\n')[0] || 'no repository'}); ${branch} is pushed, so open its PR with the host's PR tool`);
+      lines.push(handOff({ op: 'pr-create', ...dest, base: o.base, head: branch, parts: [['title', `v${version} release`], ['body', posted]], env: o.env }).trimEnd(), `NEXT: gstack-ship-queue land --pr <n> --pin ${head} once the PR the host opens has green checks`);
+      return { ok: true, version, branch, head, lines };
+    }
+    const pr = reopened ? open : gh(['pr', 'create', '--base', o.base, '--head', branch, '--title', `v${version} release`, '--body', posted], dir);
     if (!pr.ok) return fail('RELEASE_STAMP_INVALID', `gh pr create failed (${pr.err.trim().split('\n')[0]}); ${branch} is pushed, so open its PR by hand`);
+    if (reopened && hostPublishes(o.env)) {
+      const view = gh(['repo', 'view', '--json', 'nameWithOwner,url'], dir);
+      let dest: { repo: string; host: string } | undefined;
+      try { const v = JSON.parse(view.out); dest = { repo: String(v.nameWithOwner ?? ''), host: new URL(String(v.url)).host }; } catch { dest = undefined; }
+      if (!view.ok || !dest?.repo) return fail('RELEASE_STAMP_INVALID', `cannot resolve the repository the release PR belongs to (gh repo view --json nameWithOwner,url: ${view.err.trim().split('\n')[0] || 'no repository'}); ${branch} is pushed with the new stamp, but its PR still has the old body, so replace the body with the host's PR tool`);
+      const target = /\/pull\/(\d+)/.exec(pr.out.trim().split('\n').pop() ?? '')?.[1];
+      lines.push(handOff({ op: 'pr-body', target, ...dest, parts: [['body', posted]], env: o.env }).trimEnd());
+    } else if (reopened) {
+      const edit = gh(['pr', 'edit', pr.out.trim().split('\n').pop() ?? '', '--body', posted], dir);
+      if (!edit.ok) return fail('RELEASE_STAMP_INVALID', `gh pr edit failed (${edit.err.trim().split('\n')[0]}); ${branch} is pushed with the new stamp, but its PR still has the old body, so replace the body by hand`);
+    }
     const url = pr.out.trim().split('\n').pop() ?? '';
     const n = /\/pull\/(\d+)/.exec(url)?.[1];
     lines.push(`RELEASE_PR: ${n ? `#${n} ` : ''}${url}`, `NEXT: gstack-ship-queue land --pr ${n ?? '<n>'} --pin ${head} once its checks are green`);

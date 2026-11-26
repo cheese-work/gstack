@@ -11,9 +11,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { EXIT, attributionCallout, mergeBodySections, runPost, type PostEnv } from "../lib/gstack-post";
-import { extractReceipt, orderReceipt, placeReceipt, receiptRuns } from "../lib/ship-receipt";
+import { extractReceipt, orderReceipt, placeReceipt, receiptRuns, receiptSummaryLine } from "../lib/ship-receipt";
+import { runReceiptFields, type RunEvidence } from "../lib/run-evidence";
 import type { ShipReceipt } from "../lib/headless-artifacts";
 import { foldSections, unfoldSections } from "../lib/pr-body-shape";
+import { buildRow, renderRecord, type ApprovalRow, type StoreLocation } from "../lib/approval-record";
+import { reviewRoundGrantRow } from "../lib/review-round-grant";
 
 interface Call { cmd: string; args: string[]; input?: string }
 
@@ -347,6 +350,182 @@ describe("gstack-post owns the redaction scan", () => {
       ["malformed JSON block", forgedRun(JSON.stringify(valid, null, 2).replace(/\n}$/, ",\n}")), "14155552671"],
       ["unclosed block", forgedRun(JSON.stringify(valid, null, 2)).replace(/\n```\n$/, "\n"), "14155552671"],
     );
+    for (const [name, text, needle] of holds) {
+      const { code, phones, f } = post(text);
+      expect([name, phones, code]).toEqual([name, [`RULE: pii.phone.e164 LINE: ${lineOf(foldSections(text), needle)} PART: body`], EXIT.confirm]);
+      expect(f.posts()).toEqual([]);
+    }
+  });
+
+  // Value: protects=/ship's own receipt posts through pr-body without a pii.phone.e164 confirmation (gstack#4480): the writer-rendered block's
+  //   run field holding a gstack-skill-start session id (<pid>-<epoch>-<8 hex>), its pregate and requires_remote values naming all-digit 12-hex
+  //   shas, and the SHIP_RECEIPT:, CI_CARRY:, PREGATE: and READY_RECEIPT: lines the writers print (heads=, carried_from=, base_red=,
+  //   ci_carried=<lane>:<run>/<attempt>), while a phone number in prose, in a non-receipt code block, in another field, in a field holding another
+  //   shape, on a line without a receipt prefix or in a hand-written block still needs one; fails_when=every /ship body post with a 7-digit pid or
+  //   an all-digit head prefix needs --confirm, or the exemption reaches past those exact values; why_new=the GST-2047 test covers only run-id
+  //   fields, and the receipt lines' sha fields after heads=, carried_from= and base_red= were never allowlisted; seam=fake run; no_claim=real gh
+  test("a ship receipt's session id, its sha fields and the receipt lines /ship prints are not phone numbers; a phone number anywhere else still is", () => {
+    const HEAD = "2294465066182c2f99d64ba0016213463aaa0c14";
+    const carry = "remote-gate tree=704992822996 tests=37713 skipped=105 " + runReceiptFields([{ run_id: 44231639842, run_attempt: 1, profile: "ci-reuse/free-tests", head_sha: HEAD } as RunEvidence], new Date("2026-11-18T03:48:28.588Z"));
+    const receipt = (extra: Partial<ShipReceipt> = {}) => orderReceipt({
+      schema_version: 1, pr: 4480, head: HEAD, base: "main", run: "1234567-1794900000-0a1b2c3d",
+      pregate: "requires-remote cleared @704992822996 (8 checks, current for 229446506618)",
+      requires_remote: [`pregate.json/remote_gate: ${carry}`],
+      ci_carried: [{ lane: "free-tests", run: 44231639842, attempt: 1, tree: "704992822996ab" }],
+      ...extra,
+    });
+    const summary = receiptSummaryLine({ ...receipt(), predecessor: "381726354901aa", carry: { from: "381726354901ffee" }, base_red: { base: "381726354901ffee" }, ci_carried: [{ lane: "free-tests", run: 44231639842, attempt: 1, tree: "t" }, { lane: "windows-smoke", run: 44231645300, attempt: 2, tree: "t" }] } as ShipReceipt);
+    const lines = [summary, `CI_CARRY: accepted ${carry}`, `- CI_CARRY: cleared pregate.json/remote_gate ${carry}`, "PREGATE: requires-remote tree=704992822996 head=229446506618 checks=8 of 8", "READY_RECEIPT: .gstack/ready/acme-widget/4480-229446506618.json (ok)"];
+    expect(summary).toContain("carried_from=381726354901 ci_carried=free-tests:44231639842/1,windows-smoke:44231645300/2 base_red=381726354901");
+    const body = (r: ShipReceipt, prose = "Narrows one false positive.") => placeReceipt(`## What changed\n\n${prose}\n`, r);
+    const post = (text: string) => {
+      const f = fakeEnv({ files: { "/b": text }, visibility: "public" });
+      return { code: run(["pr-body", "4480", "--replace", "--body-file", "/b"], f), phones: f.stdout().split("\n").filter(l => l.startsWith("RULE: pii.phone.e164 ")), f };
+    };
+    const lineOf = (text: string, needle: string) => text.split("\n").findIndex(l => l.includes(needle)) + 1;
+
+    for (const text of [body(receipt()), body(receipt(), lines.join("\n"))]) {
+      expect(extractReceipt(text)).toMatchObject({ found: true, errors: [] });
+      const { code, phones, f } = post(text);
+      expect([phones, code]).toEqual([[], EXIT.posted]);
+      expect(f.posts()).toHaveLength(1);
+    }
+
+    const holds: Array<[string, string, string]> = [
+      ["E.164 in prose", body(receipt(), "Call +14155552671 for the on-call."), "+14155552671"],
+      ["a session id in a json code block", body(receipt(), '```json\n{ "run": "1234567-1794900000-0a1b2c3d" }\n```'), '{ "run": "1234567'],
+      ["a number in a plain code block", body(receipt(), "```\ncall 14155552671\n```"), "call 14155552671"],
+      ["heads= on a line without a receipt prefix", body(receipt(), "heads=229446506618 ran"), "heads=229446506618"],
+      ["a phone on a receipt line", body(receipt(), "CI_CARRY: none (call +1 415 555 0123)"), "CI_CARRY: none"],
+      ["a 10-digit ci_carried run on a receipt line", body(receipt(), "SHIP_RECEIPT: pr=4480 ci_carried=free-tests:4155552671/1"), "SHIP_RECEIPT: pr=4480 ci_carried"],
+      ["a receipt line inside a plain code block", body(receipt(), "```text\nSHIP_RECEIPT: pr=4480 ci_carried=phone:14155552671/1\n```"), "SHIP_RECEIPT: pr=4480 ci_carried=phone"],
+      ["a receipt line inside a tilde code block", body(receipt(), "~~~\nCI_CARRY: accepted heads=229446506618\n~~~"), "CI_CARRY: accepted heads"],
+      ["a session id in the thread field", body(receipt({ thread: "1234567-1794900000-0a1b2c3d" })), '"thread": "1234567'],
+      ["a phone in the run field", body(receipt({ run: "+14155552671" })), '"run": "+14155552671"'],
+      ["a session id without its random suffix", body(receipt({ run: "1234567-1794900000" })), '"run": "1234567-1794900000"'],
+      ["a phone in the pregate field", body(receipt({ pregate: "requires-remote cleared, call 415-555-0100" })), "call 415-555-0100"],
+    ];
+    holds.push(["hand-written one-line block", "## What changed\n\nOne fix.\n\n```gstack-ship-receipt\n" + JSON.stringify(receipt({ pregate: undefined, requires_remote: undefined, ci_carried: undefined })) + "\n```\n", '"run":"1234567']);
+    for (const [name, text, needle] of holds) {
+      const { code, phones, f } = post(text);
+      expect([name, phones, code]).toEqual([name, [`RULE: pii.phone.e164 LINE: ${lineOf(foldSections(text), needle)} PART: body`], EXIT.confirm]);
+      expect(f.posts()).toEqual([]);
+    }
+  });
+
+  // Value: protects=a gstack-receipt-runs block's session ids (/ship's earlier runs) post through pr-comment and pr-body without a pii.phone.e164
+  //   confirmation (gstack#4725), while a phone number in another field of the same line, a phone number, a truncated id or a session id under
+  //   another key, a non-canonical line, a line whose head is missing or not a 40-hex sha, an unclosed block and the same id in prose still need
+  //   one; fails_when=every /ship that rewrites a PR body holding earlier runs gets a false MEDIUM hold, or the exemption reaches past the exact
+  //   run value of a canonical runs line; why_new=the #4480 test covers only the gstack-ship-receipt block; seam=fake gh; no_claim=real gh
+  test("a runs block's session ids are not phone numbers; a phone number anywhere else in or around the block still is", () => {
+    const HEAD_A = "abc123abc123abc123abc123abc123abc123abcd";
+    const HEAD_B = "def456def456def456def456def456def456def0";
+    const RUN_A = "4242424-1700000000-deadbeef";
+    const RUN_B = "3454314-1795338725-c32255b8";
+    const post = (args: string[], text: string, visibility: "public" | "private" = "private") => {
+      const f = fakeEnv({ files: { "/b": text }, visibility });
+      return { code: run([...args, "--body-file", "/b"], f), phones: f.stdout().split("\n").filter(l => l.startsWith("RULE: pii.phone.e164 ")), f };
+    };
+    const runsBlock = (...lines: string[]) => `Body.\n\n\`\`\`gstack-receipt-runs\n${lines.join("\n")}\n\`\`\`\n`;
+
+    const comment = post(["pr-comment", "1"], runsBlock(JSON.stringify({ head: HEAD_A, version: "1.0.0.0", run: RUN_A }), JSON.stringify({ run: RUN_B, head: HEAD_B, mark: "stop" })));
+    expect([comment.phones, comment.code, comment.f.posts().length]).toEqual([[], EXIT.posted, 1]);
+
+    const first = placeReceipt("## What changed\n\nFirst run.\n", orderReceipt({ schema_version: 1, pr: 4725, head: HEAD_A, base: "main", version: "1.0.0.0", run: RUN_A }));
+    const second = placeReceipt(first, orderReceipt({ schema_version: 1, pr: 4725, head: HEAD_B, base: "main", version: "1.0.0.0", run: RUN_B }));
+    expect(second).toContain("```gstack-receipt-runs\n");
+    const body = post(["pr-body", "4725", "--replace"], second, "public");
+    expect([body.phones, body.code, body.f.posts().length]).toEqual([[], EXIT.posted, 1]);
+
+    const holds: Array<[string, string, string]> = [
+      ["a phone number in reason on a line with a valid run", runsBlock(JSON.stringify({ head: HEAD_A, run: RUN_A, mark: "abandoned", by: "ops", reason: "call +14155552671" })), "call +14155552671"],
+      ["a phone number as the run", runsBlock(JSON.stringify({ head: HEAD_A, run: "+14155552671" })), '"+14155552671"'],
+      ["a truncated session id", runsBlock(JSON.stringify({ head: HEAD_A, run: "4242424-1700000000" })), '"4242424-1700000000"'],
+      ["a session id under another key", runsBlock(JSON.stringify({ head: HEAD_A, run: "ship-1", grant: RUN_A })), RUN_A],
+      ["a session id nested under review_loop", runsBlock(JSON.stringify({ head: HEAD_A, review_loop: { run: RUN_A } })), RUN_A],
+      ["a non-canonical spaced line", runsBlock(`{ "head": "${HEAD_A}", "run": "${RUN_A}" }`), RUN_A],
+      ["a duplicated run key", runsBlock(`{"head":"${HEAD_A}","run":"${RUN_A}","run":"${RUN_B}"}`), RUN_A],
+      ["a line missing head", runsBlock(JSON.stringify({ version: "1.0.0.0", run: RUN_A })), RUN_A],
+      ["a head that is not a 40-hex sha", runsBlock(JSON.stringify({ head: "main", run: RUN_A })), RUN_A],
+      ["an unclosed runs block", `Body.\n\n\`\`\`gstack-receipt-runs\n${JSON.stringify({ head: HEAD_A, run: RUN_A })}\n`, RUN_A],
+      ["a session id in prose after the block", runsBlock(JSON.stringify({ head: HEAD_A, run: RUN_B })) + `\nRun ${RUN_A} failed.\n`, `Run ${RUN_A}`],
+      ["a runs block inside another fence", `Body.\n\n\`\`\`\`markdown\n\`\`\`gstack-receipt-runs\n${JSON.stringify({ head: HEAD_A, run: RUN_A })}\n\`\`\`\n\`\`\`\`\n`, RUN_A],
+      ["a session id in a json block", `Body.\n\n\`\`\`json\n${JSON.stringify({ head: HEAD_A, run: RUN_A })}\n\`\`\`\n`, RUN_A],
+    ];
+    for (const [name, text, needle] of holds) {
+      const { code, phones, f } = post(["pr-comment", "1"], text);
+      const line = text.split("\n").findIndex(l => l.includes(needle)) + 1;
+      expect([name, [...new Set(phones)], code, f.posts()]).toEqual([name, [`RULE: pii.phone.e164 LINE: ${line} PART: body`], EXIT.confirm, []]);
+    }
+  });
+
+  // Value: protects=a /ship session id that also reads as a Luhn-valid card number (about 1 in 10) posts without a pii.cc confirmation when it is
+  //   the run of a runs-block line or of the ship receipt (gstack#4725, gstack#4480), while a card number in another field of the same line, a card
+  //   number as the run, and the same id in prose or in a json block still need one; fails_when=about one /ship body in ten still gets a false
+  //   MEDIUM hold, or the card exemption reaches past the exact run value; why_new=the runs-block and #4480 tests cover pii.phone.e164 only;
+  //   seam=fake gh; no_claim=real gh
+  test("a session id that reads as a card number is skipped only as the run of a runs line or the receipt", () => {
+    const HEAD_A = "abc123abc123abc123abc123abc123abc123abcd";
+    const CARD_RUN = "4242405-1795338725-c32255b8";
+    const DIGIT_RUN = "99999-1795338725-12345678";
+    const post = (args: string[], text: string) => {
+      const f = fakeEnv({ files: { "/b": text }, visibility: "public" });
+      return { code: run([...args, "--body-file", "/b"], f), cards: () => f.stdout().split("\n").filter(l => l.startsWith("RULE: pii.cc ")), f };
+    };
+    const runsBlock = (...lines: string[]) => `Body.\n\n\`\`\`gstack-receipt-runs\n${lines.join("\n")}\n\`\`\`\n`;
+    const receiptBody = (runId: string) => placeReceipt("## What changed\n\nOne fix.\n", orderReceipt({ schema_version: 1, pr: 4725, head: HEAD_A, base: "main", version: "1.0.0.0", run: runId }));
+
+    for (const text of [runsBlock(JSON.stringify({ head: HEAD_A, run: CARD_RUN }), JSON.stringify({ head: HEAD_A, run: DIGIT_RUN, mark: "stop" })), receiptBody(CARD_RUN), receiptBody(DIGIT_RUN)]) {
+      const p = post(["pr-body", "4725", "--replace"], text);
+      expect([p.cards(), p.code, p.f.posts().length]).toEqual([[], EXIT.posted, 1]);
+    }
+
+    const holds: Array<[string, string, string]> = [
+      ["a card number in reason on a line with a valid run", runsBlock(JSON.stringify({ head: HEAD_A, run: CARD_RUN, mark: "abandoned", by: "ops", reason: "card 4111111111111111" })), "card 4111111111111111"],
+      ["a card number as a runs line's run", runsBlock(JSON.stringify({ head: HEAD_A, run: "4111111111111111" })), '"4111111111111111"'],
+      ["a spaced card number as a runs line's run", runsBlock(JSON.stringify({ head: HEAD_A, run: "4111 1111 1111 1111" })), '"4111 1111'],
+      ["a card number as the receipt's run", receiptBody("4111111111111111"), '"run": "4111111111111111"'],
+      ["the session id in prose after the block", runsBlock(JSON.stringify({ head: HEAD_A, run: DIGIT_RUN })) + `\nRun ${CARD_RUN} failed.\n`, `Run ${CARD_RUN}`],
+      ["the session id in a json block", `Body.\n\n\`\`\`json\n${JSON.stringify({ head: HEAD_A, run: CARD_RUN })}\n\`\`\`\n`, CARD_RUN],
+    ];
+    for (const [name, text, needle] of holds) {
+      const p = post(["pr-comment", "1"], text);
+      const line = text.split("\n").findIndex(l => l.includes(needle)) + 1;
+      expect([name, [...new Set(p.cards())], p.code, p.f.posts()]).toEqual([name, [`RULE: pii.cc LINE: ${line} PART: body`], EXIT.confirm, []]);
+    }
+  });
+
+  // Value: protects=a private PR's Approvals table (renderRecord, full mode) posts through pr-body without a pii.phone.e164 confirmation when a
+  //   fix-check grant row's Covers cell names a run id like 507-7192673 (GST-3246, trail-read row 8), while the same digits in that row's
+  //   Asked or Exact words cell, in prose, or in a table no Source footer closes still need one; fails_when=every private /ship body with such a
+  //   grant needs --confirm, or the exemption reaches past the stop= token of a renderer-shaped table; seam=fake run; no_claim=real gh
+  test("a fix-check grant's run id in a rendered Approvals table is no phone number; the same digits anywhere else still are", () => {
+    const HEAD = "2294465066182c2f99d64ba0016213463aaa0c14";
+    const loc: StoreLocation = { file: "/x", branch: "fix-undo-line", slug: "acme-widget", ephemeral: false };
+    const grant = (reason: string, words = "one fix round") => {
+      const row = buildRow({ ...reviewRoundGrantRow(HEAD, 507, "fix-check", reason, { run: "507-7192673", findings: ["p2/outside-voice#3"] }), words, by: "GStack Minder (GSTA-36)" }, loc.branch);
+      if ("code" in row) throw new Error(row.message);
+      return row;
+    };
+    const table = (rows: ApprovalRow[]) => renderRecord({ rows, state: "present", restored: false }, loc, { mode: "full" });
+    const post = (text: string) => {
+      const f = fakeEnv({ files: { "/b": text }, visibility: "private" });
+      return { code: run(["pr-body", "507", "--replace", "--body-file", "/b"], f), phones: f.stdout().split("\n").filter(l => l.startsWith("RULE: pii.phone.e164 ")), f };
+    };
+    const lineOf = (text: string, needle: string) => text.split("\n").findIndex(l => l.includes(needle)) + 1;
+    const ok = `## What changed\n\nFixes the undo line.\n\n${table([grant("the undo line names the wrong migration")])}`;
+    expect(ok).toContain("stop=507-7192673 findings=p2/outside-voice#3 |");
+    const clean = post(ok);
+    expect([clean.phones, clean.code]).toEqual([[], EXIT.posted]);
+    expect(clean.f.posts()).toHaveLength(1);
+
+    const footerless = table([grant("the undo line names the wrong migration")]).replace(/\nSource: gstack-approvals record for .*\n/, "\n");
+    const holds: Array<[string, string, string]> = [
+      ["the digits in prose", ok + "\nCall 507-7192673 for the on-call.\n", "Call 507-7192673"],
+      ["the digits in the Asked cell", ok.replace("the undo line names the wrong migration", "call 507-7192673 later"), "call 507-7192673"],
+      ["a table no Source footer closes", `## What changed\n\n${footerless}`, "stop=507-7192673"],
+    ];
     for (const [name, text, needle] of holds) {
       const { code, phones, f } = post(text);
       expect([name, phones, code]).toEqual([name, [`RULE: pii.phone.e164 LINE: ${lineOf(foldSections(text), needle)} PART: body`], EXIT.confirm]);

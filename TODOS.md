@@ -2,10 +2,6 @@
 
 ## NEXT PRIORITY
 
-### P1: /office-hours parity pin after the resource move (filed 2026-11-17, GST-3024)
-
-- **Set the office-hours parity ratio in `test/helpers/carve-guards.ts` to the measured value.** The resource move (#4463) freed about 8.6 KB but left the pin at 1.1993. The content change that follows it sets the measured ratio with its reason; if that change slips, lower the pin on its own (a pin may go down freely). Deferred from plan: handoffs/office-hours-2026-11-17/plan.md (GStack Minder drive). **Effort:** S. **Priority:** P1.
-
 ### P3: `/plan-eng-review` return follow-up (filed 2026-11-15, GST-2726)
 
 - **Decide whether `plan-eng-multi-finding-batching` rejoins the weekly lane.** The cut of the standalone skill (GST-1698) took it out through `PERIODIC_CI_EXCLUDE`, because /autoplan Phase 3 auto-decides findings. The standalone `/plan-eng-review` is back (GST-2726) and asks one question per eng finding again, so the case reaches a shipped entry. Running it weekly is paid spend, so the call belongs to the measurement plan in GST-1966. The standalone paid cases deleted with the cut (`plan-eng-plan-mode`, `plan-eng-finding-floor`, `plan-eng-review-artifact-full`) are not restored either. **Effort:** S. **Priority:** P3.
@@ -189,12 +185,12 @@ Left open by the iPad and route-drop release, each with its reason.
 
 Left open by v1.91.42.0, which lifted the snapshot file-count ceiling.
 
-- **Tracked symlinks refuse the whole /cso run** — `capture()` fails closed on
+- **Tracked symlinks refuse the whole /cso run** — `capture()` failed closed on
   any tracked symlink ("Symlink or special source file"). 5 of 8 mid-size OSS
-  repos measured for v1.91.42.0 stop there (django, rails, terraform, grafana,
-  vscode; 1-10 symlinks each, mostly test fixtures). Recording them as unread
-  exclusions in the manifest, like dependency trees, is a security design call
-  for Garry. **Effort:** M. **Priority:** P1.
+  repos measured for v1.91.42.0 stopped there (django, rails, terraform, grafana,
+  vscode; 1-10 symlinks each, mostly test fixtures). Decided on 2026-11-20 by
+  GStack Minder in #4567: /cso records each link by its target string, or notes that the target was withheld when it matches a secret pattern and never
+  dereferences it. **Effort:** M. **Priority:** P1.
 - **64 MiB aggregate source cap (#2993)** — files over 1 MiB are withheld from
   the audit but still read and counted. Stream-hash them without counting
   toward the cap, report them as unread coverage, and add an admission estimate
@@ -5513,9 +5509,10 @@ Garry for each; revisit 2026-10-29 unless a date says otherwise.
   (`['paste', 'enter', 'end_turn']`). Wait for the CLI's own write instead of a
   timer (docs/TESTING_INTERNALS.md#flake-ledger). **Effort:** S. **Priority:** P2.
 - **Split the free files the weekly seed puts over 60 s** —
-  `test/setup-install-registry.test.ts` (117 s), `test/brain-sync.test.ts` (91 s)
-  and `test/setup-codex-scope.test.ts` (77 s) are allowlisted with this todo in
-  `scripts/free-test-seed-allowlist.json` (2026-10-31 recording, run 41229924108).
+  `test/setup-install-registry.test.ts` (117 s) and `test/brain-sync.test.ts` (91 s)
+  are allowlisted with this todo in
+  `scripts/free-test-seed-allowlist.json` (2026-10-31 recording, run 41229924108);
+  `test/setup-codex-scope.test.ts` left the list at 58 s in the 2026-11-22 recording.
   `test/host-renders-prune.test.ts`, `test/setup-codex-scope-namespaces.test.ts`
   and seven other files the recordings put over 60 s were split in
   GSTA-151. Split each remaining file by describe block, rerun `bun run test:ubicloud --record-durations` and

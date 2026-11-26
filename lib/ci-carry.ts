@@ -12,7 +12,9 @@
  *   the lookup, so admitted dirty or untracked work never carries;
  *   each run passes verifyRun (same-repository head, the profile's workflow,
  *   event and jobs, the newest attempt, no newer red or running run on HEAD,
- *   max age, the run's own tree.json naming HEAD's tree);
+ *   max age, the run's own tree.json naming HEAD's tree, or a pull_request
+ *   run's merge of HEAD onto a newer base commit with the pull request's own
+ *   lines byte-identical: only the base moved, onlyBaseMoved, GST-3567);
  *   every run executed tests;
  *   with an inventory command, the runs' tree.json files cover every file it
  *   prints (a lane carries only what CI provably ran); with named jobs instead
@@ -79,13 +81,15 @@ function newestVerified(src: RunSource, name: string, profile: RunProfile, heads
   const twins = heads.slice(1).map(h => h.slice(0, 12));
   if (!listed.length) return no('no_run', `no ${profile.workflow} run (${profile.events.join(', ')}) on ${heads[0]!.slice(0, 12)}${twins.length ? ` or on ${twins.join(', ')}, which git reads as the same tree` : ''} yet`);
   const refusals: string[] = [];
+  const notMoved: string[] = [];
   const docsOnly = src.docsOnly && ((sha: string) => src.docsOnly!(sha) && (sha === heads[0] || src.docsOnly!(heads[0]!)));
   for (const run of listed) {
-    const v = verifyRun(src.deps, { repo: src.repo, runRef: String(run.id), profileName: name, profile, vetoHeads: heads, now: src.now, unchanged: src.unchanged, docsOnly });
+    const v = verifyRun(src.deps, { repo: src.repo, runRef: String(run.id), profileName: name, profile, vetoHeads: heads, now: src.now, unchanged: src.unchanged, docsOnly, dispatchable: src.dispatchable?.(profile), onlyBaseMoved: src.onlyBaseMoved });
     if (v.ok) return v;
-    refusals.push(`run ${run.id}: ${v.reason}${v.fix ? ` (the pull request's base moved after the run; fix: ${v.fix})` : ''}`);
+    refusals.push(`run ${run.id}: ${v.reason}${v.reason === 'rerun_malformed' || v.reason === 'tree_log_unbound' || (v.reason === 'artifact_missing' && profile.tree_log_step) ? ` (${v.detail})` : ''}${v.fix ? ` (the pull request's base moved after the run; fix: ${v.fix})` : ''}`);
+    if (v.notMoved) notMoved.push(`run ${run.id} tested a merge onto a newer base, but it does not count for the head: ${v.notMoved} (docs/pregate.md#base-moved-carry)`);
   }
-  return no('no_verified_run', `${name}: ${refusals.join('; ')}`);
+  return { ...no('no_verified_run', `${name}: ${refusals.join('; ')}`), ...(notMoved.length ? { diagnosis: notMoved } : {}) };
 }
 
 /**
@@ -120,7 +124,7 @@ export function findCarry(src: RunSource, o: { profiles: string[]; head: string;
     if (other) return no('tree_mismatch', `run ${other.run_id} tested tree ${other.tree.slice(0, 12)}, not ${o.tree.slice(0, 12)}`);
     const docsOnly = runs.every(e => e.docs_only);
     const empty = jobs.length || docsOnly ? undefined : runs.find(e => !e.files.length || e.tests === 0);
-    if (empty) return no('no_tests', `run ${empty.run_id}'s tree.json ${empty.files.length ? 'records 0 tests' : `lists no test files (a rerun of only the failed jobs records none): dispatch a fresh full run of ${src.profiles[empty.profile]?.workflow ?? empty.profile} (gh workflow run ${src.profiles[empty.profile]?.workflow ?? '<workflow>'} --ref <branch>) and carry from that`}`);
+    if (empty) return no('no_tests', `run ${empty.run_id}'s tree.json ${empty.files.length ? 'records 0 tests' : `lists no test files (a rerun of only the failed jobs records none): ${src.profiles[empty.profile] && src.dispatchable?.(src.profiles[empty.profile]!) === false ? `push a commit that starts a fresh full run of ${src.profiles[empty.profile]!.workflow} (it cannot be dispatched for this run profile)` : `dispatch a fresh full run of ${src.profiles[empty.profile]?.workflow ?? empty.profile} (gh workflow run ${src.profiles[empty.profile]?.workflow ?? '<workflow>'} --ref <branch>)`} and carry from that`}`);
     if (o.inventory && !docsOnly) {
       const listed = o.inventory();
       if ('error' in listed) return no('inventory_failed', listed.error);
@@ -175,7 +179,8 @@ const PASSING = ['success', 'skipped', 'neutral'];
 export async function waitForRun(deps: RunDeps, o: { workflow: string; events: string[]; head: string; also?: string[]; timeoutMs: number; intervalMs: number; sleep: (ms: number) => Promise<void>; clock: () => number; random?: () => number }): Promise<WaitVerdict> {
   const end = o.clock() + o.timeoutMs;
   for (;;) {
-    const newest = [o.head, ...(o.also ?? [])].flatMap(h => deps.runsForHead(o.workflow, h)).filter(r => o.events.includes(r.event)).sort(newestFirst)[0];
+    const runs = [o.head, ...(o.also ?? [])].flatMap(h => deps.runsForHead(o.workflow, h)).filter(r => o.events.includes(r.event)).sort(newestFirst);
+    const newest = runs.find(r => !(r.status === 'completed' && (r.conclusion === 'skipped' || r.conclusion === 'neutral'))) ?? runs[0];
     if (newest?.status === 'completed') {
       if (newest.conclusion === 'success') return { state: 'green', run: newest };
       const failing = deps.jobs(newest.id, newest.run_attempt).filter(j => !PASSING.includes(j.conclusion ?? '')).map(j => j.name);
@@ -237,7 +242,7 @@ export function importedTestLines(cwd: string, missing: string[], candidates: st
  * not-owed reason, or the last CARRY_NONE reason. A lane the cleared remote gate stood in for (--remote-gate-stands-in, GST-1688)
  * reads as its receipt, its count and why the CI carry refused.
  */
-export function recordCiResult(stderr: string): { runs?: string; tests?: string; files?: boolean; notOwed?: string; here?: string; exception?: string; reused?: string; from?: string; none?: string; diagnosis?: string[]; remoteGate?: string; standIn?: string } {
+export function recordCiResult(stderr: string): { runs?: string; treeSource?: string; tests?: string; files?: boolean; notOwed?: string; here?: string; exception?: string; reused?: string; from?: string; none?: string; diagnosis?: string[]; remoteGate?: string; standIn?: string } {
   const lines = stderr.split('\n');
   const last = lines.findLast(x => x.startsWith('gstack-evidence: recorded label='));
   const gateRow = last && / tests_ran=(\d+) log=- source=remote_gate receipt=(.+)$/.exec(last);
@@ -249,12 +254,13 @@ export function recordCiResult(stderr: string): { runs?: string; tests?: string;
   if (at < 0) return none ? { none, ...(diagnosis.length ? { diagnosis } : {}) } : {};
   const exception = lines.slice(at + 1).find(x => x.startsWith('TEST_LANE_EXCEPTION: '))?.slice('TEST_LANE_EXCEPTION: '.length);
   const got = / tests_ran=(\d+|n\/a)( unit=files)? log=- source=ci runs=(\S+)/.exec(lines[at]!);
+  const treeSource = / tree_source=(job-log)(?= |$)/.exec(lines[at]!)?.[1];
   const here = / skipped_here=(\d+) tests_ran_here=(\S+)( not_owed_here=\d+)?$/.exec(lines[at]!);
   const notOwed = lines.slice(at + 1).find(x => x.startsWith('gstack-evidence: not owed: '))?.slice('gstack-evidence: not owed: '.length);
   const reused = lines.slice(at + 1).map(x => /^CI_RECORD_REUSED: .* tree=([0-9a-f]+) /.exec(x)?.[1]).find(Boolean);
   const fromLine = lines.slice(at + 1).find(x => x.startsWith('CI_CARRY_FROM: '));
   const from = fromLine ? [...new Set([...fromLine.matchAll(/ at commit ([0-9a-f]{12})/g)].map(m => m[1]!))].join(',') : '';
-  return { runs: got?.[3], tests: got?.[1], files: !!got?.[2], ...(notOwed ? { notOwed } : {}), ...(here ? { here: `skipped_here=${here[1]} file(s) tests_ran_here=${here[2]}${here[3] ?? ''}` } : {}), ...(exception ? { exception } : {}), ...(reused ? { reused } : {}), ...(from ? { from } : {}) };
+  return { runs: got?.[3], tests: got?.[1], files: !!got?.[2], ...(treeSource ? { treeSource } : {}), ...(notOwed ? { notOwed } : {}), ...(here ? { here: `skipped_here=${here[1]} file(s) tests_ran_here=${here[2]}${here[3] ?? ''}` } : {}), ...(exception ? { exception } : {}), ...(reused ? { reused } : {}), ...(from ? { from } : {}) };
 }
 
 /** The per_file runner command for `files`: `{files}` replaced by the paths, each anchored with ./ (Bun reads a bare relative path as a substring filter) and single-quoted for bash. */

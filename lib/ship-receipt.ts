@@ -6,7 +6,7 @@
  * computes the P7 adoption census over merged PRs (deduplicated by run and
  * thread id against an owner-maintained thread cohort).
  */
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from './spawn-sync';
 import { ARTIFACT_SCHEMAS, checkSchema, type ShipReceipt, type ValidationError } from './headless-artifacts';
 import { agentNotesOrBody, splitAgentNotes, withAgentNotes } from './agent-notes';
 import { approvalSummary } from './approval-citations';
@@ -16,6 +16,7 @@ import { matchesAny } from './ship-policy';
 import { ruledNoteText } from './ruled-notes';
 import { gateDispositionText } from './gate-dispositions';
 import { laneExceptionBodyLines } from './test-lane-exception';
+import { rerunMarker } from './run-evidence';
 import { stampFileKind, versionStampOnly } from './pregate/stamp-only';
 import { stampOnlyLine, type BranchSide } from './stamp-only';
 
@@ -24,7 +25,7 @@ const KEY_ORDER: Array<keyof ShipReceipt | 'docs'> = [
   'schema_version', 'pr', 'head', 'version', 'base', 'gated_tree', 'predecessor', 'tree', 'gate_reuse', 'gate', 'ci', 'ci_carried', 'spend_usd', 'calls',
   'session_kind', 'artifacts_consumed', 'run', 'thread', 'policy', 'queue_mode', 'preregistration', 'history',
   'head_tree', 'product_patch_id', 'gstack_version', 'review_depth', 'pregate', 'requires_remote', 'issues', 'approval', 'docs', 'review_loop',
-  'review_loop_exception', 'review_round_grants', 'ruled_notes', 'gate_dispositions', 'mechanical', 'review_targeted', 'design', 'review_exclude', 'carry', 'base_red', 'flaky_exception', 'no_stop',
+  'review_loop_exception', 'review_round_grants', 'cleared_by_grant', 'cleared_by_trailer', 'ruled_notes', 'gate_dispositions', 'mechanical', 'review_targeted', 'design', 'review_exclude', 'review_exclude_fallback', 'docs_audit_read', 'carry', 'base_red', 'flaky_exception', 'no_stop',
 ];
 
 /** Keys in the fixed order so identifiers lead; undefined values are dropped. */
@@ -132,7 +133,12 @@ export const RUNS_RE = /```gstack-receipt-runs[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]
  * carries), `carry` for any other hop. status: a /ship run that
  * started and wrote no receipt yet (`started`, its counters so far) or ended on an infrastructure failure (`voided`).
  */
-export type ReceiptRun = Pick<ShipReceipt, 'head' | 'version' | 'gstack_version' | 'run' | 'review_loop' | 'review_loop_exception'> & { depth?: string; carried_from?: string; carry_kind?: 'carry' | 'recheck'; status?: 'started' | 'voided' };
+export type ReceiptRun = Pick<ShipReceipt, 'head' | 'version' | 'gstack_version' | 'run' | 'review_loop' | 'review_loop_exception'> & { depth?: string; carried_from?: string; carry_kind?: 'carry' | 'recheck'; status?: 'started' | 'voided'; mark?: 'stop' | 'grant' | 'abandoned'; tree?: string; grant?: string; by?: string; reason?: string; at?: string };
+/** The runs block keeps the newest RECEIPT_RUNS_KEPT run entries and every stop, grant or abandoned marker (lib/pr-review-history.ts), in order. */
+export function keptRuns(runs: readonly ReceiptRun[]): ReceiptRun[] {
+  const keep = new Set(runs.filter(r => !r.mark).slice(-RECEIPT_RUNS_KEPT));
+  return runs.filter(r => r.mark || keep.has(r));
+}
 export function receiptRuns(body: string): ReceiptRun[] {
   const m = RUNS_RE.exec(receiptSource(body));
   return m ? m[1]!.split('\n').flatMap(l => { try { const o = JSON.parse(l); return o && typeof o.head === 'string' ? [o as ReceiptRun] : []; } catch { return []; } }) : [];
@@ -163,7 +169,7 @@ export function placeReceipt(body: string, receipt: ShipReceipt): string {
   const prior = ex.receipt;
   const runs = receiptRuns(body).filter(r => !r.status || !!receipt.carry || receipt.run === undefined || r.run !== receipt.run);
   if (prior && typeof prior.head === 'string' && JSON.stringify(prior) !== JSON.stringify(receipt)) runs.push(receiptRun(prior));
-  const kept = runs.slice(-RECEIPT_RUNS_KEPT);
+  const kept = keptRuns(runs);
   const block = renderReceiptBlock(receipt) + (kept.length ? '\n```' + RUNS_FENCE + '\n' + kept.map(r => JSON.stringify(r)).join('\n') + '\n```\n' : '');
   if (ex.found && splitAgentNotes(body).notes === null) {
     const rest = body.replace(BLOCK_RE, '').replace(RUNS_RE, '').replace(/^\s+/, '');
@@ -207,7 +213,15 @@ export function receiptSummaryLine(r: ShipReceipt): string {
   if (loop) parts.push(`passes=${loop.passes} blocking_found=${loop.blocking_found} deferred=${loop.deferred}`
     + (loop.fix_checks ? ` fix_checks=${loop.fix_checks}` : '') + (loop.rounds !== undefined ? ` rounds=${loop.rounds}` : '') + (loop.dispatches ? ` dispatches=${Object.values(loop.dispatches).reduce((a, c) => a + c, 0)}` : ''));
   if (r.carry && typeof r.carry.from === 'string') parts.push(`carried_from=${r.carry.from.slice(0, 12)}`);
-  if (Array.isArray(r.ci_carried) && r.ci_carried.length) parts.push(`ci_carried=${r.ci_carried.map(c => `${c.lane}:${c.run}/${c.attempt}`).join(',')}`);
+  if (Array.isArray(r.ci_carried) && r.ci_carried.length) {
+    const runs = new Map<string, { files: number; attempts: number[] }>();
+    for (const c of r.ci_carried) {
+      const key = `${c.run}/${c.attempt}`;
+      const seen = runs.get(key) ?? { files: 0, attempts: [] };
+      runs.set(key, { files: Math.max(seen.files, typeof c.rerun === 'number' ? c.rerun : 0), attempts: [...seen.attempts, ...(Array.isArray(c.attempts) ? c.attempts : [])] });
+    }
+    parts.push(`ci_carried=${r.ci_carried.map(c => `${c.lane}:${c.run}/${c.attempt}`).join(',')}${rerunMarker([...runs.values()])}${r.ci_carried.some(c => c.tree_source === 'job-log') ? ' tree_source=job-log' : ''}`);
+  }
   if (r.base_red && typeof r.base_red.base === 'string') parts.push(`base_red=${r.base_red.base.slice(0, 12)}`);
   return `SHIP_RECEIPT: ${oneLine(parts.join(' '))}`;
 }
@@ -215,25 +229,33 @@ export function receiptSummaryLine(r: ShipReceipt): string {
 /** A risk-class PR (R51): the receipt's review depth has class gate or a risk class. Only these get the cross-family trail read. */
 export const riskClassReceipt = (r: ShipReceipt | undefined) => r?.review_depth?.class === 'gate' || !!r?.review_depth?.risk?.length;
 
+/** What ready found for the READY tail: its TRIAL_MERGES lines and the decision trail's cross-family read, or why there is none. */
+export interface ReadyTail { trialMerges: string[]; trailRead: { row: number; reader: string; flags?: string } | { missing: string } }
+
 /**
- * The rest of the READY block (GSTA-258 E1: the ready output is the whole READY): the receipt's review loop, the trial-merge
- * line the lane fills, and the Attention stub, whose opening line follows the receipt's risk class (docs/unattended.md).
+ * The rest of the READY block (GSTA-258 E1: the ready output is the whole READY): the receipt's review loop, ready's trial
+ * merges, and the Attention section, whose opening line follows the receipt's risk class and the trail's cross-family read
+ * (docs/unattended.md): a risk-class PR with no trail-read row prints MISSING instead of a line to fill in. Its flags line is the
+ * trail-read row's result, and with no such row there is none: the lane lists its own audit's flags, never a template line.
  */
-export function readyTailLines(r: ShipReceipt | undefined): string[] {
+export function readyTailLines(r: ShipReceipt | undefined, t: ReadyTail = { trialMerges: [], trailRead: { missing: 'ready did not look for one' } }): string[] {
   const loop = parseReviewLoop(r?.review_loop);
   const opt = (k: keyof ReviewLoopReceipt) => (loop?.[k] ? ` ${k}=${loop[k]}` : '');
   const risk = riskClassReceipt(r);
   const legacy = !!r && !r.review_depth;
+  const cls = legacy ? 'risk class unknown: the receipt records no review_depth' : `risk class: ${oneLine([r?.review_depth?.class === 'gate' ? 'gate' : '', ...(r?.review_depth?.risk ?? [])].filter(Boolean).join(', '))}`;
+  const reviewer = !legacy && !risk ? 'self-audited (not a risk class: no cross-family trail read)'
+    : 'row' in t.trailRead ? `reviewed by ${oneLine(t.trailRead.reader)} (${cls}; rule 27 cross-family trail read, trail row ${t.trailRead.row})`
+    : `MISSING: cross-family trail read (${cls}; rule 27): ${oneLine(t.trailRead.missing)}; have a reader on another model family read the trail and transcript, record it with gstack-decision-trail <trail> trail-read "<reader model>" <why> <evidence> <flags>, then rerun ready with --trail <trail>`;
   return [
     loop ? `REVIEW_LOOP: passes=${loop.passes} blocking_found=${loop.blocking_found} deferred=${loop.deferred} noted=${loop.noted ?? 0} fixed=${loop.fixed ?? 0}${opt('unrecorded')}${opt('unbound')}${opt('fix_checks')}` : 'REVIEW_LOOP: none in the receipt',
     ...(r?.ruled_notes ?? []).map(n => `RULED_NOTE: ${oneLine(ruledNoteText(n))}`),
     ...(r?.gate_dispositions ?? []).map(d => `GATE_DISPOSITION: ${oneLine(gateDispositionText(d))}`),
     ...laneExceptionBodyLines(r?.ci_carried).map(l => `TEST_LANE_EXCEPTION: ${oneLine(l.slice('Test-lane exception: '.length))}`),
-    'TRIAL_MERGES: <one line per open sibling pin that shares a file: its git merge-tree result and the resolution, or "none share a file">',
+    ...(t.trialMerges.length ? t.trialMerges : ['TRIAL_MERGES: MISSING: ready did not check the open PRs that share a file (rule 14)']),
     'Attention:',
-    legacy ? 'reviewed by <model on another family> (risk class unknown: the receipt records no review_depth; rule 27 cross-family trail read)'
-      : risk ? `reviewed by <model on another family> (risk class: ${oneLine([r?.review_depth?.class === 'gate' ? 'gate' : '', ...(r?.review_depth?.risk ?? [])].filter(Boolean).join(', '))}; rule 27 cross-family trail read)` : 'self-audited (not a risk class: no cross-family trail read)',
-    '<flags against decision-trail row numbers, or No flags>',
+    reviewer,
+    ...((legacy || risk) && 'row' in t.trailRead ? [/^(none|no flags?)?\.?$/i.test(t.trailRead.flags?.trim() ?? '') ? `No flags (trail row ${t.trailRead.row})` : `Flags (trail row ${t.trailRead.row}): ${oneLine(t.trailRead.flags!)}`] : []),
   ];
 }
 
@@ -279,8 +301,10 @@ export interface CarryPlanInput {
   retargetedFrom?: string;
   /** A commit inside the reviewed range whose product change the base already holds (a stack parent that squash-merged under a receipt written against the base, GST-1199): productPatchId.from is then the range from it. */
   stackParent?: string;
-  /** A clean scoped review of product paths whose only difference is base context next to unchanged hunks (lib/ship-patch.ts, GST-384): the carry reason it adds. */
+  /** A clean scoped review of product paths the base merge spliced (comparePath 'spliced', lib/ship-patch.ts, GST-2975): the carry reason it adds. */
   scopedReview?: string;
+  /** Product paths whose own added and removed lines, modes and symlink targets are the reviewed bytes and whose only difference is base context next to them (comparePath 'context', GST-3562 G): reviewed, with CI on HEAD as the check. */
+  baseContext?: string[];
   /** Stamp files the branch changed as product whose only change since the reviewed head is a stamp on the branch's own rows, the base untouched, and without which the two product patches match (GST-980). */
   stampedRows?: string[];
 }
@@ -346,18 +370,19 @@ export function classifyCarryPath(rel: string, extra: { metadata?: readonly stri
  * against the base has the same patch-id at both heads, which is what a
  * conflict-only base merge, a test-only fix or a release-metadata change
  * leaves behind. A product patch that differs is RECEIPT_CARRY_PRODUCT_CHANGED,
- * whatever else changed, unless every difference is base context next to unchanged hunks
- * and a scoped review of those hunks came back clean (`scopedReview`), or a stamp on the
+ * whatever else changed, unless every difference is base context next to byte-identical own hunks
+ * (`baseContext`, GST-3562 G), a spliced hunk whose scoped review came back clean (`scopedReview`), or a stamp on the
  * branch's own rows in a stamp file the branch also changed as product (`stampedRows`, GST-980).
  */
 export function planCarry(input: CarryPlanInput): CarryPlan {
-  if (input.productPatchId.from !== input.productPatchId.head && (input.changedProduct.length || (!input.scopedReview && !input.stampedRows?.length))) {
+  if (input.productPatchId.from !== input.productPatchId.head && (input.changedProduct.length || (!input.scopedReview && !input.stampedRows?.length && !input.baseContext?.length))) {
     const named = input.changedProduct.slice(0, CARRY_NAMED_PATHS);
     return { ok: false, code: 'RECEIPT_CARRY_PRODUCT_CHANGED', message: `product diff changed between ${input.from.slice(0, 12)} and ${input.head.slice(0, 12)}: ${named.join(', ') || 'patch-id differs'}${input.changedProduct.length > named.length ? ` (+${input.changedProduct.length - named.length} more)` : ''}` };
   }
   const parent = input.retargetedFrom ?? input.stackParent?.slice(0, 12);
   const reasons: string[] = parent ? [`stack parent ${parent} landed`] : [];
   if (input.mergeCommits > 0) reasons.push(input.mergeCommits === 1 ? 'base merge' : `${input.mergeCommits} base merges`);
+  if (input.baseContext?.length && input.productPatchId.from !== input.productPatchId.head) reasons.push(`base context moved next to unchanged own lines (${input.baseContext.slice(0, CARRY_NAMED_PATHS).join(', ')}${input.baseContext.length > CARRY_NAMED_PATHS ? ` (+${input.baseContext.length - CARRY_NAMED_PATHS} more)` : ''}; CI at head checks it)`);
   if (input.scopedReview && input.productPatchId.from !== input.productPatchId.head) reasons.push(input.scopedReview);
   if (input.stampedRows?.length && input.productPatchId.from !== input.productPatchId.head) reasons.push(`a stamp on the branch's own rows (${input.stampedRows.join(', ')})`);
   if (input.testPatchId.from !== input.testPatchId.head) reasons.push('test-only change');
@@ -419,16 +444,20 @@ export const STACK_PARENT_WALK = 100;
  * change the current base already holds: merging it into currentBase, or into the base commit that landed it when the
  * base edited those lines since (heldBy, GST-1399), changes no product path. That is a stack parent
  * that squash-merged (or merged) into the base after the receipt was written against the base (GST-1199). A commit with no
- * product change of its own (a test-first commit) is no parent, since any base trivially holds it. Null when no
- * commit within STACK_PARENT_WALK qualifies or git cannot tell; a conflicted product path is never held.
+ * product change of its own (a test-first commit) is no parent, since any base trivially holds it, and neither is a commit
+ * rangeBase already held: a parent that landed before the review is part of the reviewed base, so measuring from it drops
+ * nothing and compares the wrong range (yc-software/qm#3457, GST-3315). That last skip is for a reviewed range (the receipt check
+ * and Step 11.5); `reviewedRange` false drops it, for land's commit message, whose range starts at a merge base the child's merge of
+ * the base moved past its parent's squash. Null when no commit within STACK_PARENT_WALK qualifies or git cannot tell; a conflicted
+ * product path is never held.
  */
-export function landedStackParent(repoRoot: string, s: { rangeBase: string; reviewed: string; currentBase: string }, product: readonly string[]): string | null {
+export function landedStackParent(repoRoot: string, s: { rangeBase: string; reviewed: string; currentBase: string }, product: readonly string[], reviewedRange = true): string | null {
   const run = (args: string[]) => spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
   const commits = run(['rev-list', '--topo-order', `--max-count=${STACK_PARENT_WALK + 1}`, `${s.rangeBase}..${s.reviewed}`]);
   if (commits.status !== 0) return null;
   for (const commit of commits.stdout.split('\n').filter(c => c && c !== s.reviewed)) {
     if (run(['diff', '--quiet', s.rangeBase, commit, '--', ...product]).status !== 1) continue;
-    if (heldBy(repoRoot, commit, s.currentBase, product)) return commit;
+    if (heldBy(repoRoot, commit, s.currentBase, product) && !(reviewedRange && heldBy(repoRoot, commit, s.rangeBase, product))) return commit;
   }
   return null;
 }
@@ -480,6 +509,14 @@ export function carryReceipt(receipt: ShipReceipt, head: string, carry: CarryRec
   const fromTree = receipt.head_tree ?? at.fromTree;
   const trees = [...new Set([...(prior?.trees ?? []), ...(fromTree ? [fromTree] : [])])].filter(t => t !== at.tree).slice(-20);
   return orderReceipt({ ...receipt, head, head_tree: at.tree, product_patch_id: at.productPatchId || 'none', carry: { ...merged, ...(trees.length ? { trees } : {}) } });
+}
+
+/** The `open` blockers of a `--review-loop` record (gstack-review-scope summary) that no owner ruling closes: write refuses a receipt while any is left (GST-3075). A ruling names the finding by its ledger id or its fingerprint, and with `onHead` counts only when its head is the receipt head or an ancestor of it. */
+export function unruledOpenBlockers(loop: Record<string, unknown> | undefined, ruled: ReadonlyArray<{ finding: string; head?: string }>, onHead?: (head: string) => boolean): string[] {
+  const open = (Array.isArray(loop?.open) ? loop.open : []).flatMap((o: unknown) => typeof o === 'string' ? [{ id: o, names: [o] }]
+    : o && typeof o === 'object' && typeof (o as any).id === 'string' ? [{ id: (o as any).id as string, names: [(o as any).id, (o as any).fingerprint].filter((n): n is string => typeof n === 'string') }] : []);
+  const live = ruled.filter(n => !onHead || (typeof n.head === 'string' && onHead(n.head)));
+  return open.filter(o => !live.some(n => o.names.includes(n.finding))).map(o => o.id);
 }
 
 /** The loop counters the factory scorecard reads (passes, blocking_found, deferred), as `write --review-loop` records them. */

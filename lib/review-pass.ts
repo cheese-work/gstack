@@ -18,8 +18,9 @@ import { AgentModelError, resolveAgentModel } from './agent-model';
 import { BriefError, briefFile, checkoutRoot, checkoutTree, promptHash, renderBrief, sliceDiff, sliceNote, withWorkspace, type BriefRole, type SectionTexts, type Slots } from './review-brief';
 import { REVIEW_DIFF_MAX_BYTES, disclosureDigest } from './review-exclude';
 import { appendEvent, readerKey } from './review-ledger';
+import { claimedFixCheckHunks, recordFixCheckHunks } from './review-evidence';
 import { policySelection, selectFor } from './review-selection';
-import { diffCommand, type Dispatch } from './review-depth';
+import { SPECIALISTS, diffCommand, type Dispatch } from './review-depth';
 import { TARGETED_RULES, parseClassList, targetedBriefSha, targetedRead } from './review-targeted';
 import type { FetchHit } from './review-fetch';
 import type { EffectiveReaders } from './ship-policy-readers';
@@ -134,7 +135,7 @@ const STAGE_OF: Record<string, Stage> = { specialist: 'specialists', 'fix-check'
 export function buildManifest(o: {
   pass: string; out: string; ledger: string; base: string; diffBase: string; root: string; checklistRoot: string;
   dispatches: Array<Dispatch & { excerpt?: string[] }>; next: string; planLines: string[]; learnings?: string | null; extras?: Extra[];
-  targetedClasses?: readonly string[]; mergeBase?: string; rangeBase?: string; fixCheck?: FixCheckFiles; reviewExclude?: Record<string, unknown>; disclosure?: string; readers?: EffectiveReaders; voices?: boolean;
+  targetedClasses?: readonly string[]; mergeBase?: string; rangeBase?: string; voiceBase?: string; fixCheck?: FixCheckFiles; reviewExclude?: Record<string, unknown>; disclosure?: string; readers?: EffectiveReaders; voices?: boolean;
 }): Manifest {
   if (o.voices && o.extras?.length) throw new BriefError(`Step 11's voices pass sends no audit reader, so it takes no --extras: ${o.extras.map(e => e.name).join(', ')}`);
   const readers: PassReader[] = [];
@@ -154,6 +155,7 @@ export function buildManifest(o: {
     const keep = (d.keep ?? []).filter(s => !excerpt.includes(s));
     readers.push({ reader, stage, title: `ship ${o.pass} ${reader}`, state: 'planned', role, name, effort: d.effort, exclude, checklists: d.checklists,
       ...(policy.length ? { policy_exclude: policy.map(shellQuote).join(' ') } : {}), ...(keep.length ? { keep } : {}), ...(excerpt.length ? { excerpt } : {}),
+      ...((role === 'adversarial-native' || role === 'outside-voice') && o.voiceBase ? { diff_base: o.voiceBase } : {}),
       ...(role === 'targeted' ? { classes: [...(o.targetedClasses ?? [])], diff_base: o.mergeBase ?? o.diffBase } : {}),
       ...(role === 'adversarial-native' && d.classes?.length ? { classes: [...d.classes], diff_base: o.mergeBase ?? o.diffBase } : {}),
       ...(d.model === 'cross-family' ? { cross_family: true } : d.model && d.model !== 'lane' ? { model: { model_id: d.model } } : {}),
@@ -197,6 +199,12 @@ export function specialistFindings(mergedFile: string): string {
   return lines.length ? lines.join('\n') + '\n' : '';
 }
 
+/** The file a plan's checklist name reads: the design specialist's is the generated review/design-checklist.md (#4410), every other one review/specialists/<name>.md. */
+export function checklistFile(root: string, name: string): string {
+  if (name !== 'red-team' && !(SPECIALISTS as readonly string[]).includes(name)) throw new BriefError(`checklist not found: ${name} is none of ${SPECIALISTS.join(', ')}, red-team`);
+  return path.join(root, name === 'design' ? 'review/design-checklist.md' : `review/specialists/${name}.md`);
+}
+
 /** Render every planned reader of a stage. The Red Team renders only after every earlier reader is collected. */
 export function renderStage(m: Manifest, stage: Stage, t: SectionTexts, diffFor: (base: string, r: PassReader) => string): PassReader[] {
   const open = m.readers.filter(r => (r.stage === 'first' || r.stage === 'specialists') && r.state !== 'collected');
@@ -219,10 +227,10 @@ export function renderStage(m: Manifest, stage: Stage, t: SectionTexts, diffFor:
     }
     const role = r.role!;
     const slots: Slots = { name: r.name, diff_base: r.diff_base ?? m.diff_base, exclude: r.exclude, stack: m.stack, test_fw: m.test_fw, learnings: m.learnings ?? undefined,
-      checklists: r.checklists?.map(n => path.join(m.checklist_root, 'review/specialists', `${n}.md`)).join(','),
+      checklists: r.checklists?.map(n => checklistFile(m.checklist_root, n)).join(','),
       policy_exclude: r.policy_exclude, ...(m.disclosure ? { disclosure: m.disclosure, keep: r.keep?.map(shellQuote).join(' ') } : {}),
       ...(m.disclosure && r.excerpt_file ? { excerpt_file: r.excerpt_file.file, excerpt_bytes: String(r.excerpt_file.bytes), excerpt_sha256: r.excerpt_file.sha256, excerpt_files: String(r.excerpt_file.files) } : {}) };
-    if (role === 'specialist') slots.checklist = path.join(m.checklist_root, 'review/specialists', `${r.name}.md`);
+    if (role === 'specialist') slots.checklist = checklistFile(m.checklist_root, r.name ?? '');
     if (r.read_only) slots.read_only = '1';
     let findingsSha: string | undefined;
     if (role === 'red-team') {
@@ -234,7 +242,7 @@ export function renderStage(m: Manifest, stage: Stage, t: SectionTexts, diffFor:
     }
     let slice: Record<string, unknown> = {};
     if (role === 'outside-voice') {
-      const s = sliceDiff(diffFor(m.diff_base, r), REVIEW_DIFF_MAX_BYTES);
+      const s = sliceDiff(diffFor(r.diff_base ?? m.diff_base, r), REVIEW_DIFF_MAX_BYTES);
       const diffFile = path.join(briefs, 'outside-voice.diff');
       fs.writeFileSync(diffFile, s.text, { mode: 0o600 });
       Object.assign(slots, { diff_file: diffFile, diff_bytes: String(s.bytes), diff_sha256: createHash('sha256').update(s.text).digest('hex'), ...(s.sliced ? { diff_slice: sliceNote(s, REVIEW_DIFF_MAX_BYTES) } : {}) });
@@ -243,7 +251,8 @@ export function renderStage(m: Manifest, stage: Stage, t: SectionTexts, diffFor:
     if (role === 'fix-check') {
       const read = (f: string | undefined, what: string) => { if (!f) return undefined; try { return fs.readFileSync(f, 'utf8'); } catch { throw new BriefError(`cannot read the fix-check ${what} ${f}`); } };
       const fc = m.fix_check!;
-      Object.assign(slots, { fix_list: read(fc.fix_list, 'fix list'), hunks: read(fc.hunks, 'hunks'), tests: read(fc.tests, 'tests'), callers: read(fc.callers, 'callers') });
+      Object.assign(slots, { fix_list: read(fc.fix_list, 'fix list'), hunks: claimedFixCheckHunks(process.cwd())?.text ?? read(fc.hunks, 'hunks'), tests: read(fc.tests, 'tests'), callers: read(fc.callers, 'callers') });
+      recordFixCheckHunks(process.cwd(), slots.hunks ?? '', m.ledger, slots.fix_list ?? '');
     }
     let targeted = {};
     if (role === 'targeted' || (role === 'adversarial-native' && r.classes?.length)) {

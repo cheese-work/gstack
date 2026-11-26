@@ -3,9 +3,10 @@
 `/ship --token-cap 25M` (or `GSTACK_SHIP_TOKEN_CAP=25M`) bounds what one /ship run spends, and
 long runs hand their heavy segments to fresh-context children. The helper is
 `bin/gstack-ship-budget`; the skill's procedure is `ship/sections/budget-handoff.md`.
-There is one default cap: an observe-mode /ship subagent that meters its own task row (`--reading-from task`,
-below) and names no cap gets 100M, the line where /runaway-stopper stops a subagent, and prints
-`BUDGET_DEFAULT_CAP: 100M`; `--token-cap none` turns it off. Without a cap, /ship meters usage when it can and prints it, and
+There is one default cap: an observe-mode run that meters its own counter (the thread's own jam id, `--reading-from own`,
+or one row of a root thread's `tasks` with `--reading-from task`, below) and names no cap gets 50M, the line where
+/runaway-stopper stops a subagent, and prints `BUDGET_DEFAULT_CAP: 50M`; `--token-cap none` turns it off. A run that
+reads a shared counter (`--reading-from this`, `--meter-scope tree`) gets no default. Without a cap, /ship meters usage when it can and prints it, and
 nothing else changes.
 
 ## What the cap guarantees
@@ -140,7 +141,9 @@ one program measure nothing: Capy books a call after its program ends.
 
 A jam's own counter includes its own subagents, outside voices too (measured 2026-10-30: +10.92M
 across a six-reader dispatch with two ~0.35M parent calls between). `"this"` is the root thread,
-whose counter also holds every sibling tree. A subagent running /ship cannot read its own jam id. When its brief names its title
+whose counter also holds every sibling tree. /ship runs in the thread that owns the pull request, never in a subagent,
+so on Capy it reads that thread's own jam id: a crew thread is a root thread, and its counter holds its reviewers. A
+reading taken inside a subagent is different, because a subagent cannot read its own jam id. When its brief names its title
 (`GSTACK_SHIP_TASK_TITLE=<title>`), it reads `cost` from its own row of the root thread's `tasks` (the row whose `title` matches; its subtree, exact)
 and starts with `--reading-from task`; every later reading in the run comes from that same row, and the title carries a
 nonce so a rerun at the same head can't match a finished row. Otherwise it
@@ -244,7 +247,9 @@ line prints `call`, `call_floor` and `above_floor`, so each verdict can be check
    remaining sub-cap instead (cap − used − reserved − unknown − its stop overhead).
 2. The child is a Capy subagent on the shared machine, or on Claude Code
    `gstack-ship-budget launch --in <brief>`: a background `claude -p` (resolved through lib/claude-bin.ts)
-   with explicit permission flags and the return file named.
+   with explicit permission flags and the return file named, whose prompt opens with the typed
+   `/ship --continue <brief>` (`/gstack-ship` under `skill_prefix: true`; see
+   [unattended.md](unattended.md#starting-a-child-agent-type-the-skill-first)).
 3. The child runs `verify-handoff` first; a moved pin refuses
    ([HANDOFF_PIN_MOVED](troubleshooting.md#handoff-pin-moved)). It admits against its sub-cap
    with child_used = its own counter's reading − its reading at `verify-handoff` (a parent-metered
@@ -306,6 +311,22 @@ project-user Drive folder on Capy) bound to the run id and their hashes, so afte
 change `resume --run <id>` restores both. A corrupt ledger
 ([BUDGET_LEDGER_INVALID](troubleshooting.md#budget-ledger-invalid)) is rebuilt from the
 record's block with `--rebuild-from-record`; open reservations are then charged as unknown.
+
+### A stopped run whose ledger is closed
+
+A /ship run that stopped after its ledger closed (the run's last step closes it) can't be resumed:
+`resume` refuses with `run <id> is closed`. To continue that run's remaining steps, open a new
+observe ledger on the same record:
+
+```bash
+gstack-ship-budget start --record <record> --mode observe --reading <cost.tokens>
+```
+
+`start` reuses a record's ledger only while it is open, so on a closed one it mints a new run id
+and ledger for the same record and prints its `BUDGET_RUN:` line. The new ledger meters from its own
+first reading: spend under the closed ledger stays in that ledger and is not carried into the new
+one, so add the two when you report what the run cost. On Capy, `--reading` is the thread's
+`cost.tokens`; without a reading the start is unmetered.
 
 ### Successor handoff
 

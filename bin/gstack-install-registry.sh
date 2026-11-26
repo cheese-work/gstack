@@ -277,7 +277,7 @@ _gstack_status_rows() {
     cur="$(cat "$src/VERSION" 2>/dev/null || true)"
     note=""
     if [ ! -e "$root" ] && [ ! -L "$root" ]; then
-      result=missing; note="install root $root is gone; the next setup or upgrade drops this row"
+      result=missing; note="install root $root is gone; ./setup --refresh-registered (which /gstack-upgrade runs) drops this row"
     elif [ -z "$cur" ]; then
       result=missing; cur="-"; note="source checkout $src is gone; reinstall from a fresh clone with ./setup --host $host"
     elif [ "$cur" = "$ver" ]; then
@@ -299,6 +299,9 @@ ROWS
     seen="$seen$root|"
     src="$(_gstack_install_source "$root")"
     [ -n "$src" ] || continue
+    case "$root" in */.agents/skills/gstack)
+      [ "$(cd "${root%/.agents/skills/gstack}" 2>/dev/null && pwd -P)" = "$src" ] && continue ;;
+    esac
     cur="$(cat "$src/VERSION" 2>/dev/null || echo '-')"
     note="installed before the registry; register it: cd $src && ./setup --host $host"
     if [ "$scope" = global ] && [ "$host" != claude ] && _gstack_vendored_source "$src"; then
@@ -346,9 +349,27 @@ gstack_disabled_normalize() {
 # GSTACK_RETIRED_SKILLS — skills gstack keeps off every host whatever
 # disabled_skills says; an existing gstack-owned entry is removed like a
 # disabled one. investigate's source is gone (GST-1717), and its old entries
-# are still removed. Same list as RETIRED_SKILLS in scripts/discover-skills.ts
+# are still removed. verify is now build-check (#4593): its old gstack-owned
+# entry would hide Claude Code's built-in /verify. Same list as RETIRED_SKILLS in scripts/discover-skills.ts
 # (test/retired-skills.test.ts).
-GSTACK_RETIRED_SKILLS="investigate"
+GSTACK_RETIRED_SKILLS="investigate verify"
+
+# GSTACK_RENAMED_SKILLS — old:new skill names. A user's disabled_skills entry
+# under an old name still turns off the skill's new name (#4593). Same map as
+# RENAMED_SKILLS in scripts/discover-skills.ts.
+GSTACK_RENAMED_SKILLS="verify:build-check"
+
+# gstack_disabled_config VALUE — gstack_disabled_normalize for the user's own
+# disabled_skills value, with each renamed skill mapped to its new name. Only
+# the config value is mapped: the retired list keeps its old names.
+gstack_disabled_config() {
+  local out=" " n r
+  for n in $(gstack_disabled_normalize "$1"); do
+    for r in $GSTACK_RENAMED_SKILLS; do [ "$n" = "${r%%:*}" ] && n="${r#*:}"; done
+    case "$out" in *" $n "*) ;; *) out="$out$n " ;; esac
+  done
+  printf '%s' "$out"
+}
 
 # GSTACK_CREW_SKILLS — the gstack-on-Capy skills (crew/README.md). Only a Capy
 # machine registers them; anywhere else they get no entry on any host and an

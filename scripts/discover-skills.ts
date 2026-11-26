@@ -13,10 +13,19 @@ const SKIP = new Set(['node_modules', '.git', 'dist']);
 /**
  * Retired skills: no host registers them, and setup removes an earlier
  * install's gstack-owned entry. investigate was cut after a no-gain eval and
- * its source is gone (GST-1717). setup and gstack-relink read the same list
+ * its source is gone (GST-1717). verify is now build-check (#4593): the old
+ * name hid Claude Code's built-in /verify, so an upgrade removes gstack's old
+ * entry and leaves a user's own verify skill. setup and gstack-relink read the same list
  * from GSTACK_RETIRED_SKILLS in bin/gstack-install-registry.sh.
  */
-export const RETIRED_SKILLS = ['investigate'];
+export const RETIRED_SKILLS = ['investigate', 'verify'];
+
+/**
+ * Old skill name → new name. A user's disabled_skills entry under the old name
+ * still turns off the renamed skill (#4593). Same map as GSTACK_RENAMED_SKILLS
+ * in bin/gstack-install-registry.sh.
+ */
+export const RENAMED_SKILLS: Readonly<Record<string, string>> = { verify: 'build-check' };
 
 /**
  * Review skills /autoplan reads as a phase methodology from its own directory

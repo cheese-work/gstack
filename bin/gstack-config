@@ -61,9 +61,6 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           # off = only run skills you type explicitly.
 #                           # (true and false still work: true means all, false means off.)
 #
-# routing_declined: false   # Set to true to skip the CLAUDE.md routing injection
-#                           # prompt. Set back to false to be asked again.
-#
 # ─── Telemetry ───────────────────────────────────────────────────────
 # telemetry: off            # off | anonymous | community
 #                           #   off       — no data sent, no local analytics (default)
@@ -214,7 +211,7 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           #   (a one-line note on every turn to run the start
 #                           #   command of a skill; edits openclaw.json or config.yaml via the
 #                           #   harness CLI). off: takes it out. Absent = each
-#                           #   registration keeps its saved choice (default off).
+#                           #   registration keeps its saved choice, else on (the default).
 #                           #   GSTACK_HARNESS_START_HOOK=1|0 overrides it. Docs: docs/hosts.md
 #
 # ─── Advanced ────────────────────────────────────────────────────────
@@ -314,11 +311,11 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           #   Invalid values are REJECTED (value kept).
 #
 # ─── Workspace-aware ship ────────────────────────────────────────────
-# workspace_root: $HOME/conductor/workspaces  # Where /ship looks for sibling
-#                           # Conductor worktrees when picking a VERSION slot.
+# workspace_root: $HOME/conductor/workspaces  # When picking a VERSION slot,
+#                           # /ship checks every git worktree of the repo,
+#                           # wherever it lives, plus <root>/<repo>/<workspace>/
+#                           # here, which also finds separate clones.
 #                           # Set to "null" to disable sibling scanning entirely.
-#                           # Non-Conductor users can point this at any directory
-#                           # that holds parallel worktrees of the same repo.
 #
 '
 
@@ -328,7 +325,6 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 lookup_default() {
   case "$1" in
     proactive) echo "core" ;; # core | all | off (true = all, false = off); core suggests only /office-hours, /review, /qa, /ship
-    routing_declined) echo "false" ;;
     telemetry) echo "off" ;;
     auto_upgrade) echo "true" ;; # fork: silent update from cheese-work/gstack (CHE-5564)
     update_check) echo "true" ;;
@@ -353,6 +349,7 @@ lookup_default() {
     timeline_stop_hook) echo "yes" ;; # yes | no — controls ./setup timeline Stop hook registration (#2677)
     skill_routing) bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$(dirname "$0")/gstack-skill-route" --default skill_routing ;; # on | off — the skill-routing UserPromptSubmit hook; default: SWITCH_DEFAULT in lib/skill-route.ts (docs/skill-routing-and-contracts.md)
     skill_contracts) bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$(dirname "$0")/gstack-skill-route" --default skill_contracts ;; # on | off — the skill-contract Stop hook; default: SWITCH_DEFAULT in lib/skill-route.ts (docs/skill-routing-and-contracts.md)
+    destructive_guard) bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$(dirname "$0")/gstack-skill-route" --default destructive_guard ;; # on | off — the destructive-command check (PreToolUse on Bash and PowerShell, /careful's check in every session); default: SWITCH_DEFAULT in lib/skill-route.ts (docs/skill-routing-and-contracts.md)
     ceo_review_gate) bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$(dirname "$0")/gstack-skill-route" --default ceo_review_gate ;; # on | off — the /plan-ceo-review enforcement hooks; default: SWITCH_DEFAULT in lib/skill-route.ts (docs/skill-gates.md)
     autoplan_gate) bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$(dirname "$0")/gstack-skill-route" --default autoplan_gate ;; # on | off — the /autoplan stop gate; default: SWITCH_DEFAULT in lib/skill-route.ts (docs/skill-gates.md)
 
@@ -404,7 +401,7 @@ lookup_default() {
     agent_model) echo "" ;; # empty = host (agents keep their own model); gstack-models resolve --role agent
     codex_effort) echo "" ;; # empty = each gate's own effort; /codex --effort, then GSTACK_CODEX_EFFORT, win (gstack-codex-probe run-with-timeout --effort)
     review_effort_tiers) echo "on" ;; # on | off — gstack-review-plan effort tiers (docs/model-policy.md#reasoning-effort)
-    harness_start_hook) echo "" ;; # on | off — empty = each harness registration keeps its saved choice (docs/hosts.md#start-hook)
+    harness_start_hook) echo "" ;; # on | off — empty = each harness registration keeps its saved choice, else on (docs/hosts.md#start-hook)
     ship_greptile_early) echo "true" ;; # true | false — /ship's early Greptile PR
     pr_wait_gating_bots) echo "greptile,macroscope" ;; # review bots gstack-pr-wait --until ready waits for
     pr_wait_advisory_bots) echo "coderabbit" ;; # review bots gstack-pr-wait reports but never waits for
@@ -974,6 +971,13 @@ $_gstack_legacy_root"
       echo "Error: design_detector '$VALUE' not recognized. Valid values: auto, off. Existing value left unchanged." >&2
       exit 1
     fi
+    # verify_before_commit is retired (#4593): /verify is now /build-check, so
+    # Claude Code no longer runs it before each commit and nothing reads the key.
+    # Old scripts that set it still succeed; the note says why nothing changes.
+    if [ "$KEY" = "verify_before_commit" ]; then
+      echo "Note: verify_before_commit is retired and has no effect: /verify is now /build-check, and nothing runs it before a commit any more. Nothing was changed." >&2
+      exit 0
+    fi
     # cross_project_learnings: empty get is the first-run prompt sentinel.
     # Skills enable only on the literal "true". A typo must not persist — that
     # keeps the feature off and suppresses the prompt. Reject, like
@@ -1043,8 +1047,10 @@ $_gstack_legacy_root"
         done
       done
       _clean=""
+      _renamed="$( [ -f "$(dirname "$0")/gstack-install-registry.sh" ] && . "$(dirname "$0")/gstack-install-registry.sh" 2>/dev/null && printf '%s' "${GSTACK_RENAMED_SKILLS:-}" || true)"
       for _x in $(printf '%s' "$VALUE" | tr ',' ' ' | tr -d "\"'"); do
         _x="${_x#/}"
+        for _r in $_renamed; do [ "${_x#gstack-}" = "${_r%%:*}" ] && _x="${_r#*:}"; done
         case "$_x" in
           gstack|gstack-upgrade)
             echo "Error: $_x cannot be disabled (it is how gstack upgrades and routes). Existing value left unchanged." >&2
@@ -1150,7 +1156,7 @@ $_gstack_legacy_root"
     echo ""
     echo "# ─── Active values (including defaults for unset keys) ───"
     report_root_disagreement
-    for KEY in proactive routing_declined telemetry auto_upgrade update_check update_channel \
+    for KEY in proactive telemetry auto_upgrade update_check update_channel \
                skill_prefix explain_level plan_mode_preamble claude_loadout \
                codex_reviews autoplan_shadow autoplan_shadow_model gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted artifacts_sync_removals plan_tune_hooks \
@@ -1160,7 +1166,7 @@ $_gstack_legacy_root"
                ship_measure_max_rounds ship_measure_sweep_cases ship_measure_sweep_budget_usd ship_rerun_backend test_backend \
                plan_review_tier implementation_tier model_frontier_claude model_frontier_openai \
                model_smart_claude model_smart_openai codex_effort review_effort_tiers agent_model harness_start_hook \
-               skill_routing skill_contracts ceo_review_gate autoplan_gate plan_record; do
+               skill_routing skill_contracts destructive_guard ceo_review_gate autoplan_gate plan_record; do
       gstack_config_select "$KEY"
       VALUE="$_gstack_cfg_value"
       SOURCE="default"
@@ -1176,7 +1182,7 @@ $_gstack_legacy_root"
     ;;
   defaults)
     echo "# gstack-config defaults"
-    for KEY in proactive routing_declined telemetry auto_upgrade update_check update_channel \
+    for KEY in proactive telemetry auto_upgrade update_check update_channel \
                skill_prefix explain_level plan_mode_preamble claude_loadout \
                codex_reviews autoplan_shadow autoplan_shadow_model gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted artifacts_sync_removals plan_tune_hooks \
@@ -1186,7 +1192,7 @@ $_gstack_legacy_root"
                ship_measure_max_rounds ship_measure_sweep_cases ship_measure_sweep_budget_usd ship_rerun_backend test_backend \
                plan_review_tier implementation_tier model_frontier_claude model_frontier_openai \
                model_smart_claude model_smart_openai codex_effort review_effort_tiers agent_model harness_start_hook \
-               skill_routing skill_contracts ceo_review_gate autoplan_gate plan_record; do
+               skill_routing skill_contracts destructive_guard ceo_review_gate autoplan_gate plan_record; do
       printf '  %-24s %s\n' "$KEY:" "$(lookup_default "$KEY")"
     done
     ;;

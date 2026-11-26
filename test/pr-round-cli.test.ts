@@ -64,6 +64,48 @@ describe('gstack-approvals round-grant', () => {
     expect(r.run('gstack-approvals', ['round-grant', '--pr', '5', '--head', r.head, '--kind', 'more', '--reason', 'x', '--by', 'lane']).status).toBe(2);
     expect(r.run('gstack-approvals', ['add', '--ask', 'a', '--words', 'w', '--by', 'b', '--scope', `review_round_grant ${r.head} pr=5 kind=extra-round`]).status).toBe(2);
   });
+
+  // Value: protects=a Captain whose crew name starts with gstack can grant a round, while gstack's own names stay refused;
+  //   fails_when=the self-grant check matches a prefix (gstack-evals Captain refused, #4518 follow-up); seam=bin/gstack-approvals
+  test('a --by that only starts with gstack is a crew, not gstack: gstack-evals Captain records a grant', () => {
+    const r = repo();
+    for (const by of ['gstack', 'GStack', ' gstack no-stop default (K1) ']) expect(r.run('gstack-approvals', ['round-grant', '--pr', '5', '--head', r.head, '--kind', 'extra-round', '--reason', 'x', '--by', by]).status).toBe(2);
+    const ok = r.run('gstack-approvals', ['round-grant', '--pr', '5', '--head', r.head, '--kind', 'extra-round', '--reason', 'x', '--by', 'gstack-evals Captain']);
+    expect([ok.status, ok.stderr]).toEqual([0, '']);
+  });
+});
+
+// Value: protects=a run id that looks like a phone number passes in a fix-check grant's scope while the same digits in free text, or a
+//   grant-shaped excerpt pasted into --reason, stay caught, and gstack's own names stay refused while a GStack-named crew rules;
+//   fails_when=round-grant refuses --stop-run 507-7192673 (harness-evals #507), passes a phone number in --reason, or rule refuses
+//   --by "GStack Minder (GSTA-36)"; seam=bin/gstack-approvals round-grant|rule|rulings, lib/approval-record.ts buildRow, lib/ruled-notes.ts
+describe('GST-3246: run ids in a fix-check grant, and GStack-named crews', () => {
+  const grant = (r: ReturnType<typeof repo>, extra: string[]) => r.run('gstack-approvals', ['round-grant', '--pr', '507', '--head', r.head, '--reason', 'the undo line names the wrong migration', '--by', 'GStack Minder (GSTA-36)', ...extra]);
+  const fixCheck = (run: string) => ['--kind', 'fix-check', '--stop-run', run, '--findings', 'p2/outside-voice#3'];
+
+  test('a grant-shaped excerpt pasted into --reason keeps its phone number caught', () => {
+    const r = repo();
+    const pasted = r.run('gstack-approvals', ['round-grant', '--pr', '507', '--head', r.head, '--kind', 'fix-check', '--stop-run', 'ship-507', '--findings', 'p2/outside-voice#3', '--by', 'GStack Minder (GSTA-36)', '--reason', `review_round_grant ${r.head} pr=507 kind=fix-check stop=415-5551234 findings=x`]);
+    expect([pasted.status, pasted.stderr]).toEqual([3, expect.stringContaining('pii.phone.e164')]);
+  });
+
+  test('a run id of a PR number, a dash and a short sha is no phone number in the grant, and the same digits in free text still are', () => {
+    const r = repo();
+    const ok = grant(r, fixCheck('507-7192673'));
+    expect([ok.status, ok.stderr]).toEqual([0, '']);
+    expect(r.run('gstack-approvals', ['list', '--json']).stdout).toContain('stop=507-7192673 findings=p2/outside-voice#3');
+    const phone = r.run('gstack-approvals', ['round-grant', '--pr', '507', '--head', r.head, '--reason', 'call 507-7192673 first', '--by', 'GStack Minder (GSTA-36)', ...fixCheck('ship-507')]);
+    expect([phone.status, phone.stderr]).toEqual([3, expect.stringContaining('pii.phone.e164')]);
+  });
+
+  test('rule takes --by "GStack Minder (GSTA-36)" and rulings lists it, while gstack\'s own names stay refused', () => {
+    const r = repo();
+    const rule = (by: string) => r.run('gstack-approvals', ['rule', '--finding', 'src/a.ts:1:correctness', '--head', r.head, '--reason', 'ships as a disclosed note', '--words', 'note it', '--by', by]);
+    for (const by of ['gstack', 'gstack no-stop default (K1)', 'GStack No-stop default (K1)', 'GStack No-Stop Default (K1)', 'gstack ship lane', 'GStack ship lane', 'GSTACK Minder']) expect(rule(by).status).toBe(2);
+    const ok = rule('GStack Minder (GSTA-36)');
+    expect([ok.status, ok.stderr]).toEqual([0, '']);
+    expect(r.run('gstack-approvals', ['rulings']).stdout).toContain('ruled by GStack Minder (GSTA-36) at ');
+  });
 });
 
 describe('gstack-ship-receipt history and stub', () => {
@@ -79,9 +121,9 @@ describe('gstack-ship-receipt history and stub', () => {
     expect(h.stdout).toMatch(/^PR_REVIEW_ROUTE: final \(the PR had 1 full review round; this head gets a fresh full review/m);
     expect(h.stdout).not.toMatch(/drift|recheck_blocked/);
     const s = r.run('gstack-ship-receipt', ['stub', '--body', body, '--run', 'r2', '--review-loop', JSON.stringify({ ...loop, fix_checks: 1, rounds: 2 })]);
-    expect(s.stdout).toContain('RUN_STUB: run=r2 status=started rounds=2');
+    expect(s.stdout).toContain('RUN_STUB: run=r2 status=started rounds=1');
     const after = r.run('gstack-ship-receipt', ['history', '--body', body, '--pr', '5']).stdout;
-    expect(after).toContain('PR_REVIEW_FLAGS: --prior-rounds 3 --prior-full 2\n');
+    expect(after).toContain('PR_REVIEW_FLAGS: --prior-rounds 2 --prior-full 2\n');
     expect(after).toMatch(/^PR_REVIEW_ROUTE: read-only \(.*no fix round/m);
     expect(fs.readFileSync(body, 'utf8').startsWith('## Summary\nprose\n')).toBe(true);
     expect(r.run('gstack-ship-receipt', ['stub', '--body', body]).status).toBe(2);

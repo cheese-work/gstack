@@ -14,6 +14,11 @@ and the Captain's drive) is the `/captain` skill and `crew/docs/captain.md` in t
   question to the person. The Captain relays it in plain language and sends back the person's exact words.
   A thread with no Captain asks the person directly with a Capy question. Either way, never use a bare
   question, gate codes or slot numbers.
+- **Every relay quotes its source.** The person's answer is one case of a wider rule: whatever an agent
+  passes on (an answer, another crew's finding, a report from another agent system, a summary it was given)
+  goes out in the source's own words, unchanged and marked as a quote, with who wrote them, when, and what the
+  relayer checked ("checked: nothing" when it checked nothing). A summary may sit beside the quote, never in
+  place of it, because a summary repeated unchecked is how a wrong claim reaches the owner.
 - **Scope.** An answer covers the thread and scope it was asked for. It is not a blanket approval for
   later work.
 - **Standing approvals** are the ones the Captain lists in its own rules, for example "merge when green,
@@ -163,18 +168,21 @@ every wake more than about five minutes after its last call rewrites its whole c
 warm price. The merge lane reports to the Captain only a landing, a decision or a blocker
 (`crew/docs/captain.md` in the gstack checkout, Roles).
 
-A token cap in a brief goes to /ship as `--token-cap <n>`. Run each /ship in a fresh subagent titled
-`ship #<n> at <head7> <4-char nonce>` (unique), with `GSTACK_SHIP_TASK_TITLE=<that title>` in its brief and the instruction to
-take every reading (start, notes, close) from its own row of the root thread's `tasks` and start the budget with
-`--reading-from task`, so it caps at 100M by default; never message a finished /ship subagent to run another. When /ship stops on it (`STOP:
+A token cap in a brief goes to /ship as `--token-cap <n>`. Run /ship in your own thread, never in a subagent, and
+take every reading (start, notes, close) from your own jam id's `tools.thread.get`, which counts its reviewers
+too; a rerun at the same head is a new /ship run with a new run id. When /ship stops on the cap (`STOP:
 reason=budget_exhausted`, `status=incomplete`), the lane reports the BUDGET and RECOVER lines and asks the
 owner; it never raises the cap itself. The owner's answer runs the RECOVER line with
 `--approved-by <who> --words "<their words>"`, and `gstack-approvals add` records the same words.
 
 ## 5. Asks to try a build
 
-An ask for the owner to try an app build, and any "v1 is ready" report, goes out only after the build clears
-`gstack-first-use` (`docs/first-use-check.md` in the checkout): an agent from another model family plays that exact
-build cold on the same kind of device and does the plan's first five day-one actions, with a screenshot or video of
-each. Send the text `gstack-first-use message` prints, unchanged; when it refuses, fix the build and replay instead of
-asking. Record the owner's score and words with `gstack-first-use score`, never in a PR or the repository.
+An ask for the owner to try a first version or an app build, and any "v1 is ready" report, goes out only after the
+build clears `gstack-first-use` (`docs/first-use-check.md` in the checkout): an agent from another model family follows
+the exact try-it message, step by step, on the real target (the owner's setup, or a copy loaded with realistic data when
+a step writes; his own Mac through Aside for anything installed there) and records useful, thin, wrong or broken and one
+line per step. The message opens with the owner's quoted words and what this version does with each, names every thin
+step and every notice he'll see, and names the known defects in the build he holds now. Send the text
+`gstack-first-use message` prints, unchanged; when it refuses, fix the build or the step and replay instead of asking.
+Any report of a passing test on a build he doesn't hold yet names the build he does hold and its known defects. Record
+the owner's score and words with `gstack-first-use score`, never in a PR or the repository.

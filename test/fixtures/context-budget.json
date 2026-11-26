@@ -1,12 +1,13 @@
 {
   "_comment": "Context-budget ratchet ceilings (~tokens). Regenerate: bun test/helpers/capture-context-budget.ts. Headroom: alwaysOnTotal x1.05, eagerPerInvocation x1.1. Graded by test/context-budget-ratchet.test.ts via lib/context-bill.ts checkBudget.",
-  "alwaysOnTotal": 8647,
+  "alwaysOnTotal": 9498,
   "eagerPerInvocation": {
     "autoplan": 11306,
     "benchmark": 8420,
     "benchmark-models": 4454,
     "browse": 9311,
     "browser-skills/hackernews-frontpage": 371,
+    "build-check": 3282,
     "canary": 7750,
     "captain": 7282,
     "capy/skill/gstack": 5847,
@@ -25,7 +26,7 @@
     "diagram": 4529,
     "document-generate": 6027,
     "document-release": 4469,
-    "eval-plan": 6271,
+    "eval-plan": 7057,
     "freeze": 1163,
     "gstack": 5793,
     "gstack-upgrade": 6297,
@@ -68,7 +69,6 @@
     "test-audit": 4636,
     "ubicloud": 4059,
     "unfreeze": 423,
-    "verify": 3231,
     "write-skill": 2386
   }
 }
