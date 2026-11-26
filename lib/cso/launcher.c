@@ -25,6 +25,13 @@
 #error GSTACK_CSO_CORE_SHA256 must bind the launcher to its compiled core
 #endif
 
+/* The managed workspace root is fixed when the launcher is built (setup's
+ * environment), never read from the caller: a caller who could choose it could
+ * widen it to enclose an unmanaged worktree and unlock Git config includes. */
+#ifndef GSTACK_CSO_MANAGED_ROOT
+#define GSTACK_CSO_MANAGED_ROOT ""
+#endif
+
 typedef struct {
   uint32_t state[8];
   uint64_t bits;
@@ -135,6 +142,7 @@ int main(int argc,char **argv){
   envp[e++]=strdup("LANG=C.UTF-8");envp[e++]=strdup("LC_ALL=C.UTF-8");envp[e++]=strdup("TZ=UTC");
   const char *names[]={"HOME","GSTACK_HOME","CLAUDE_PLUGIN_DATA","CLAUDE_PLUGIN_ROOT","DOCKER_HOST","DOCKER_CONTEXT","DOCKER_CONFIG"};
   for(size_t i=0;i<sizeof names/sizeof names[0];i++){envp[e]=entry(names[i],"");if(!envp[e++]){fputs("gstack-cso: environment input is too large\n",stderr);return 69;}}
+  envp[e]=fixed_entry("MULTICA_TASK_WORKSPACES_ROOT",GSTACK_CSO_MANAGED_ROOT);if(!envp[e++]){fputs("gstack-cso: managed root is too large\n",stderr);return 69;}
   envp[e]=fixed_entry("GSTACK_CSO_CALLER_CWD",caller_cwd);if(!envp[e++]){fputs("gstack-cso: caller working directory is too large\n",stderr);return 69;}
   char lock_value[32];snprintf(lock_value,sizeof lock_value,"%d",generation_lock);
   envp[e]=fixed_entry("GSTACK_CSO_GENERATION_LOCK_FD",lock_value);if(!envp[e++])return 69;
