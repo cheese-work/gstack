@@ -199,9 +199,18 @@ cso_compile_posix_launcher() {
     # ad-hoc dylib. This section makes dyld prune DYLD_* before constructors.
     Darwin) CSO_LAUNCHER_FLAGS="-Wl,-sectcreate,__RESTRICT,__restrict,/dev/null" ;;
   esac
+  # The managed workspace root is fixed here, from the installer's environment,
+  # so the audited caller cannot choose where Git config includes are allowed.
+  CSO_MANAGED_ROOT="${GSTACK_CSO_MANAGED_ROOT:-${MULTICA_TASK_WORKSPACES_ROOT:-}}"
+  case "$CSO_MANAGED_ROOT" in
+    "") ;;
+    /*[!A-Za-z0-9._/+@:-]*|*..*|*//*) echo 'CSO managed workspace root must be a plain absolute path.' >&2; return 64 ;;
+    /*) ;;
+    *) echo 'CSO managed workspace root must be a plain absolute path.' >&2; return 64 ;;
+  esac
   # shellcheck disable=SC2086 -- the optional platform flags are fixed literals.
   "$CSO_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra $CSO_LAUNCHER_FLAGS \
-    "-DGSTACK_CSO_CORE_SHA256=\"$2\"" lib/cso/launcher.c -o "$1"
+    "-DGSTACK_CSO_CORE_SHA256=\"$2\"" "-DGSTACK_CSO_MANAGED_ROOT=\"$CSO_MANAGED_ROOT\"" lib/cso/launcher.c -o "$1"
 }
 
 # An evaluation candidate embeds a cso-eval-* runtime catalog in a private
