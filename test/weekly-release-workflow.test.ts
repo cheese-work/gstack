@@ -48,7 +48,8 @@ describe('weekly-release.yml', () => {
 
   test('the cut job runs only off main for a schedule or dispatch, writes contents, reads checks, and rejects a ref that is not a 40-hex SHA', () => {
     const cut = wf.jobs.cut!;
-    expect(cut.if).toBe("github.event_name != 'pull_request' && github.ref == 'refs/heads/main'");
+    // CHE-9814: the fork (cheese-work/gstack) has no free-tests/main-backstop checks and cuts no releases; only upstream cuts.
+    expect(cut.if).toBe("github.repository == 'garrytan/gstack' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'");
     expect(cut.permissions).toEqual({ contents: 'write', checks: 'read', actions: 'read', issues: 'read', 'pull-requests': 'read' });
     expect(cut.steps.find(s => s.uses?.startsWith('actions/checkout@'))!.with).toEqual({ 'fetch-depth': 0 });
     const plan = cut.steps.find(s => s.name === 'Plan and cut')!;

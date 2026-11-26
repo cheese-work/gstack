@@ -70,7 +70,8 @@ permissions: {}
 jobs:
   cut:
     name: Cut the release
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # CHE-9814: upstream only; forks have no free-tests/main-backstop checks and cut no releases.
+    if: github.repository == 'garrytan/gstack' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
